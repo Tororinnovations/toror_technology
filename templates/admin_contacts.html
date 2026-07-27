@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% set title = 'Contacts · ' ~ site_name %}
+{% block content %}
+  <section class="section">
+    <div class="section-head">
+      <h3>Contacts</h3>
+      <span class="muted">Add individually or import CSV</span>
+    </div>
+    <div class="grid cards two-up">
+      <form class="card" method="post">
+        <h3>Add contact</h3>
+        <div class="form-grid">
+          <div class="field"><label>Name</label><input name="name" required></div>
+          <div class="field"><label>Email</label><input type="email" name="email"></div>
+          <div class="field"><label>Phone</label><input name="phone"></div>
+          <div class="field"><label>Notes</label><input name="notes"></div>
+        </div>
+        <button class="btn primary" type="submit">Save contact</button>
+      </form>
+      <form class="card" method="post" enctype="multipart/form-data">
+        <h3>CSV upload</h3>
+        <p>Columns: name,email,phone,notes</p>
+        <div class="field"><label>CSV file</label><input type="file" name="csv" accept=".csv" required></div>
+        <button class="btn" type="submit">Import CSV</button>
+      </form>
+    </div>
+    <div class="section grid cards list-grid">
+      {% for contact in contacts %}
+        <article class="card">
+          <h3>{{ contact.name }}</h3>
+          <p>{{ contact.email or 'No email' }}{% if contact.phone %}<br>{{ contact.phone }}{% endif %}</p>
+          <div class="hero-ctas">
+            <a class="btn" href="/admin/contacts/{{ contact.id }}/edit">Edit</a>
+            <form method="post" action="/admin/contacts/{{ contact.id }}/delete" onsubmit="return confirm('Delete this contact?')">
+              <button class="btn" type="submit">Delete</button>
+            </form>
+          </div>
+        </article>
+      {% else %}
+        <article class="card"><h3>No contacts yet</h3><p>Upload contacts to begin managing the list.</p></article>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+{% set title = 'Settings · ' ~ site_name %}
+{% block content %}
+  <section class="section">
+    <div class="section-head">
+      <h3>Brand settings</h3>
+      <span class="muted">Logo, colors, and site text</span>
+    </div>
+    <div class="grid cards settings-grid">
+      <form class="card" method="post">
+        <div class="form-grid">
+          <div class="field"><label>Company name</label><input name="site_name" value="{{ site_name }}"></div>
+          <div class="field"><label>Developer name</label><input name="developer_name" value="{{ developer_name }}"></div>
+          <div class="field"><label>Tagline</label><input name="tagline" value="{{ tagline }}"></div>
+          <div class="field"><label>Primary email</label><input name="primary_email" value="{{ primary_email }}"></div>
+          <div class="field"><label>Hero text</label><input name="hero_text" value="{{ hero_text }}"></div>
+          <div class="field"><label>Accent color</label><input name="accent_color" value="{{ accent_color }}"></div>
+        </div>
+        <div class="field">
+          <label>Theme mode</label>
+          <select name="theme_mode">
+            <option value="light" {% if theme_mode == 'light' %}selected{% endif %}>Light</option>
+            <option value="dark" {% if theme_mode == 'dark' %}selected{% endif %}>Dark</option>
+          </select>
+        </div>
+        <button class="btn primary" type="submit">Save settings</button>
+      </form>
+      <form class="card" method="post" action="/admin/logo" enctype="multipart/form-data">
+        <h3>Logo</h3>
+        <p>Upload a new logo file to replace the placeholder.</p>
+        <div class="field"><label>Logo file</label><input type="file" name="logo" accept="image/*" required></div>
+        <button class="btn" type="submit">Upload logo</button>
+      </form>
+    </div>
+  </section>
+{% endblock %}

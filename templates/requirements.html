@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% set title = 'Requirements · ' ~ site_name %}
+{% block content %}
+  <section class="section">
+    <div class="section-head">
+      <h3>Site requirements</h3>
+      <span class="muted">Simple, professional, and mobile-friendly</span>
+    </div>
+    <div class="grid cards">
+      <div class="card"><h3>Branding</h3><p>White-first design, black text, blue accents, centered logo on visitor pages, and editable company identity.</p></div>
+      <div class="card"><h3>Access</h3><p>Magic-link login for users, admin username and password from environment variables, and protected vault files.</p></div>
+      <div class="card"><h3>Content</h3><p>Admin-managed contacts, projects, profile details, and secure share links for selected videos.</p></div>
+      <div class="card"><h3>PWA</h3><p>Offline shell caching, install support, and a lightweight mobile navigation bar.</p></div>
+      <div class="card"><h3>Chat</h3><p>Browser notifications for new messages where supported, plus live polling for updates.</p></div>
+      <div class="card"><h3>Persistence</h3><p>SQLite by default, with support for a custom database path or external database on deployment.</p></div>
+    </div>
+  </section>
+{% endblock %}
