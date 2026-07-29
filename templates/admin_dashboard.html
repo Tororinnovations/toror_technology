@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% set title = 'Dashboard · ' ~ site_name %}
+{% block content %}
+  <section class="section admin-section">
+    <div class="section-head">
+      <h3>Command dashboard</h3>
+      <a class="btn" href="/admin/settings">Settings</a>
+    </div>
+    <div class="grid cards stats-grid">
+      <div class="mini-stat"><span class="muted">Users</span><strong>{{ stats.users }}</strong></div>
+      <div class="mini-stat"><span class="muted">Contacts</span><strong>{{ stats.contacts }}</strong></div>
+      <div class="mini-stat"><span class="muted">Projects</span><strong>{{ stats.projects }}</strong></div>
+      <div class="mini-stat"><span class="muted">Vault</span><strong>{{ stats.vault }}</strong></div>
+      <div class="mini-stat"><span class="muted">Messages</span><strong>{{ stats.messages }}</strong></div>
+    </div>
+    <div class="section grid cards admin-grid">
+      <a class="card admin-action" href="/admin/users"><h3>Users</h3><p>View signups, locations, devices, and access state.</p></a>
+      <a class="card admin-action" href="/admin/projects"><h3>Projects</h3><p>Publish files, links, and documents.</p></a>
+      <a class="card admin-action" href="/admin/vault"><h3>Vault</h3><p>Upload private videos and share token links.</p></a>
+      <a class="card admin-action" href="/admin/chat"><h3>Messages</h3><p>Track seen status and reply instantly.</p></a>
+    </div>
+    <div class="section">
+      <div class="section-head"><h3>Recent signups</h3><span class="muted">Latest account activity</span></div>
+      <div class="card table-card">
+        <table class="table compact">
+          <thead><tr><th>Name</th><th>Username</th><th>Email</th><th>Location</th><th>Device</th><th>Status</th></tr></thead>
+          <tbody>
+            {% for user in recent_users %}
+            <tr>
+              <td>{{ user.name }}</td>
+              <td>{{ user.username }}</td>
+              <td>{{ user.email }}</td>
+              <td>{{ user.location_text or '—' }}</td>
+              <td>{{ (user.device_info or '—')[:36] }}</td>
+              <td>{{ 'Active' if user.is_active else 'Paused' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No users yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+{% endblock %}

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="{{ accent_color }}">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <title>{{ item.title }} · {{ site_name }}</title>
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-card hero auth-hero" style="align-items:start;">
+      <div class="auth-copy">
+        <span class="badge">Private share link</span>
+        <h2>{{ item.title }}</h2>
+        <p>{{ item.description or 'Shared video from the company vault.' }}</p>
+        <div class="card" style="padding:0;overflow:hidden;">
+          <video controls playsinline style="width:100%;display:block;background:#000;">
+            <source src="{{ video_url }}" type="{{ item.mime_type or 'video/mp4' }}">
+          </video>
+        </div>
+        <div class="hero-ctas">
+          <a class="btn primary" href="{{ video_url }}" target="_blank" rel="noreferrer">Open file</a>
+          <a class="btn" href="/login">Back to access</a>
+        </div>
+      </div>
+      <div class="logo-center auth-logo">
+        <img src="{{ logo_path }}" alt="Logo">
+      </div>
+    </section>
+  </main>
+</body>
+</html>

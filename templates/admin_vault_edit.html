@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% set title = 'Edit Vault · ' ~ site_name %}
+{% block content %}
+  <section class="section">
+    <div class="card form-card">
+      <h3>Edit vault item</h3>
+      <form class="grid" method="post" enctype="multipart/form-data">
+        <div class="form-grid">
+          <div class="field"><label>Title</label><input name="title" value="{{ item.title }}" required></div>
+          <div class="field"><label>Status</label>
+            <select name="active">
+              <option value="1" {% if item.active %}selected{% endif %}>Visible</option>
+              <option value="0" {% if not item.active %}selected{% endif %}>Hidden</option>
+            </select>
+          </div>
+        </div>
+        <div class="field"><label>Description</label><textarea name="description">{{ item.description }}</textarea></div>
+        <div class="field"><label>Replace video</label><input type="file" name="video" accept="video/*"></div>
+        <button class="btn primary" type="submit">Update vault item</button>
+      </form>
+    </div>
+  </section>
+{% endblock %}
