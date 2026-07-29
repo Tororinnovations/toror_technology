@@ -11,9 +11,9 @@ A Flask website with a login-first public flow, private project uploads, a hidde
 ## Environment variables
 - `SECRET_KEY`
 - `ADMIN_USERNAME`
-- `ADMIN_PASSWORD`
+- `ADMIN_PASSWORD` (or `RENDER_ENV_PASSWORD`)
 - `ADMIN_EMAIL`
-- `ADMIN_DEVELOPMENT_OPEN` (`1` for local/no-password admin access, `0` for hosted credentials)
+- `ADMIN_DEVELOPMENT_OPEN` (`1` for local/no-password admin access, `0` for hosted credentials; default is `0`)
 - `SMTP_HOST`
 - `SMTP_PORT`
 - `SMTP_USER`

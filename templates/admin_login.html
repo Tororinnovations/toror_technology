@@ -7,18 +7,17 @@
       <h2>Sign in</h2>
       {% if open_mode %}
         <p>Development access is open on this build.</p>
-      {% else %}
-        <p>Use the environment credentials on the host.</p>
-        <form class="grid auth-form" method="post">
-          <div class="field"><label>Username</label><input name="username" autocomplete="username" required></div>
-          <div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password" required></div>
-          <button class="btn primary" type="submit">Continue</button>
-        </form>
       {% endif %}
+      <p>Use the host environment credentials to continue.</p>
+      <form class="grid auth-form" method="post">
+        <div class="field"><label>Username</label><input name="username" autocomplete="username" required></div>
+        <div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password" required></div>
+        <button class="btn primary" type="submit">Continue</button>
+      </form>
     </div>
     <div class="card auth-preview">
       <h3>Deployment</h3>
-      <p>Set ADMIN_USERNAME, ADMIN_PASSWORD, and ADMIN_EMAIL in your host environment.</p>
+      <p>Set ADMIN_USERNAME, ADMIN_PASSWORD (or RENDER_ENV_PASSWORD), and ADMIN_EMAIL in your host environment.</p>
     </div>
   </section>
 {% endblock %}

@@ -65,6 +65,18 @@ def close_db(_exc):
         db.close()
 
 
+def get_admin_username():
+    return os.environ.get('ADMIN_USERNAME', 'admin')
+
+
+def get_admin_password():
+    return (
+        os.environ.get('RENDER_ENV_PASSWORD')
+        or os.environ.get('ADMIN_PASSWORD')
+        or 'change-me'
+    )
+
+
 def query_one(sql, args=()):
     return get_db().execute(sql, args).fetchone()
 
@@ -232,6 +244,18 @@ def user_required(fn):
             return redirect(url_for('login'))
         return fn(*args, **kwargs)
     return wrapper
+
+
+
+@app.before_request
+def protect_admin_routes():
+    path = request.path or ''
+    if path == '/xtspolsjhulupjoppsuplmkzcodup' or path.startswith('/admin') or path.startswith('/api/admin'):
+        if path in {'/xtspolsjhulupjoppsuplmkzcodup'}:
+            return None
+        if not is_admin():
+            return redirect(url_for('admin_entry'))
+    return None
 
 
 def allowed_file(filename, allowed_exts):
@@ -500,29 +524,27 @@ def logout():
 
 @app.route('/xtspolsjhulupjoppsuplmkzcodup', methods=['GET', 'POST'])
 def admin_entry():
-
-    open_mode = os.environ.get('ADMIN_DEVELOPMENT_OPEN', '1') == '1'
+    open_mode = os.environ.get('ADMIN_DEVELOPMENT_OPEN', '0') == '1'
     if open_mode and request.method == 'GET' and not session.get('admin_logged_in'):
         session['admin_logged_in'] = True
         session['user_email'] = os.environ.get('ADMIN_EMAIL', 'admin@local')
         flash('Admin access opened for local use.', 'success')
         return redirect(url_for('admin_dashboard'))
-    if request.method == 'POST' or not open_mode:
+    if request.method == 'POST':
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
-        if username == os.environ.get('ADMIN_USERNAME', 'admin') and password == os.environ.get('ADMIN_PASSWORD', 'change-me'):
+        if username == get_admin_username() and password == get_admin_password():
             session['admin_logged_in'] = True
             session['user_email'] = os.environ.get('ADMIN_EMAIL', 'admin@local')
             flash('Signed in.', 'success')
             return redirect(url_for('admin_dashboard'))
-        if not open_mode:
-            flash('Invalid credentials.', 'error')
+        flash('Invalid credentials.', 'error')
     return render_template('admin_login.html', open_mode=open_mode)
 
 
 @app.route('/admin')
 def admin_redirect():
-    return redirect(url_for('admin_entry'))
+    return redirect(url_for('admin_dashboard' if is_admin() else 'admin_entry'))
 
 
 @app.route('/admin/logout')
