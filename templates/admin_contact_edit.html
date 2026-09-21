@@ -1,18 +1,5 @@
 {% extends 'base.html' %}
-{% set title = 'Edit Contact · ' ~ site_name %}
+{% set title = 'Edit contact | ' ~ site_name %}
 {% block content %}
-  <section class="section">
-    <div class="card form-card">
-      <h3>Edit contact</h3>
-      <form class="grid" method="post">
-        <div class="form-grid">
-          <div class="field"><label>Name</label><input name="name" value="{{ contact.name }}" required></div>
-          <div class="field"><label>Email</label><input type="email" name="email" value="{{ contact.email }}"></div>
-          <div class="field"><label>Phone</label><input name="phone" value="{{ contact.phone }}"></div>
-          <div class="field"><label>Notes</label><input name="notes" value="{{ contact.notes }}"></div>
-        </div>
-        <button class="btn primary" type="submit">Update contact</button>
-      </form>
-    </div>
-  </section>
+<section class="section"><div class="card form-card"><div class="section-head"><div><span class="section-kicker">Contact record</span><h3>Edit {{ contact.name }}</h3></div></div><form class="grid" method="post"><div class="form-grid"><div class="field"><label>Name</label><input name="name" value="{{ contact.name }}" required></div><div class="field"><label>Business</label><input name="company" value="{{ contact.company or '' }}"></div><div class="field"><label>Email</label><input type="email" name="email" value="{{ contact.email or '' }}"></div><div class="field"><label>Phone</label><input name="phone" value="{{ contact.phone or '' }}"></div><div class="field"><label>Subject</label><input name="subject" value="{{ contact.subject or '' }}"></div><div class="field"><label>Status</label><select name="status"><option {% if contact.status=='New' %}selected{% endif %}>New</option><option {% if contact.status=='Contacted' %}selected{% endif %}>Contacted</option><option {% if contact.status=='Qualified' %}selected{% endif %}>Qualified</option><option {% if contact.status=='Closed' %}selected{% endif %}>Closed</option></select></div></div><div class="field"><label>Message</label><textarea name="message">{{ contact.message or '' }}</textarea></div><div class="field"><label>Internal notes</label><textarea name="notes">{{ contact.notes or '' }}</textarea></div><button class="btn primary" type="submit">Update contact</button></form></div></section>
 {% endblock %}

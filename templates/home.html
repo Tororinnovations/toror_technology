@@ -1,18 +1,60 @@
 {% extends 'base.html' %}
-{% set title = site_name %}
+{% set title = site_name ~ ' | Technology & Digital Solutions' %}
 {% block content %}
-  <section class="hero">
-    <div>
-      <span class="badge">Company site</span>
-      <h2>{{ site_name }}</h2>
-      <p>{{ hero_text or tagline }}</p>
-      <div class="hero-ctas">
-        <a class="btn primary" href="/register">Register</a>
-        <a class="btn" href="/login">Login</a>
-      </div>
-    </div>
-    <div class="logo-center">
-      <img src="{{ logo_path }}" alt="Company logo">
-    </div>
-  </section>
+<section class="hero-section">
+  <div class="hero-copy">
+    <span class="eyebrow">{{ hero_kicker }}</span>
+    <h1>Technology built around <em>real work.</em></h1>
+    <p class="hero-lead">{{ hero_text }}</p>
+    <div class="cta-row"><a class="btn primary" href="/contact">Start a conversation</a><a class="btn" href="/services">Explore our services</a></div>
+    <div class="hero-proof"><span>Software systems</span><span>Digital platforms</span><span>Automation & support</span></div>
+  </div>
+  <div class="hero-mark" aria-hidden="true">
+    <div class="mark-ring"><img src="{{ logo_path }}" alt=""></div>
+    <div class="hero-card-note"><strong>TOROR</strong><span>Technology Company Ltd</span></div>
+  </div>
+</section>
+
+<section class="trust-strip" aria-label="Capabilities">
+  <div><strong>01</strong><span>Understand</span><small>We start with the problem.</small></div>
+  <div><strong>02</strong><span>Build</span><small>We turn it into working technology.</small></div>
+  <div><strong>03</strong><span>Deploy</span><small>We get it into real use.</small></div>
+  <div><strong>04</strong><span>Improve</span><small>We keep it useful as needs change.</small></div>
+</section>
+
+<section class="content-section split-section" id="who-we-are">
+  <div><span class="section-kicker">Who we are</span><h2>Practical technology, not technology for its own sake.</h2></div>
+  <div class="section-copy"><p>{{ about_text }}</p><a class="text-link" href="/about">Read our story →</a></div>
+</section>
+
+<section class="content-section" id="services-preview">
+  <div class="section-heading"><div><span class="section-kicker">What we do</span><h2>Digital systems designed to move work forward.</h2></div><a class="btn" href="/services">See all services</a></div>
+  <div class="feature-grid">
+    <article class="feature-card"><span class="feature-no">01</span><h3>Custom software</h3><p>Business applications, portals, dashboards, workflows, and tools designed around the way your organisation actually operates.</p></article>
+    <article class="feature-card"><span class="feature-no">02</span><h3>Web platforms</h3><p>Professional, responsive websites and web applications that make information, services, and transactions easier to access.</p></article>
+    <article class="feature-card"><span class="feature-no">03</span><h3>Automation & integration</h3><p>Reduce repetitive work by connecting processes, records, notifications, forms, payments, and digital services.</p></article>
+    <article class="feature-card"><span class="feature-no">04</span><h3>Deployment & support</h3><p>Hosting, updates, maintenance, troubleshooting, and practical support after a system goes live.</p></article>
+  </div>
+</section>
+
+<section class="content-section history-band">
+  <div class="history-panel"><span class="section-kicker">Our history</span><h2>A company shaped by building, testing, learning, and improving.</h2><p>{{ history_text }}</p><a class="btn" href="/about#history">Company history</a></div>
+  <div class="history-numbers"><div><strong>People</strong><span>At the centre of every system.</span></div><div><strong>Purpose</strong><span>Technology must solve something real.</span></div><div><strong>Progress</strong><span>Good products keep getting better.</span></div></div>
+</section>
+
+<section class="content-section" id="work-preview">
+  <div class="section-heading"><div><span class="section-kicker">Selected work</span><h2>Projects and digital products.</h2></div><a class="btn" href="/work">View the work</a></div>
+  <div class="project-grid-public">
+    {% for project in projects %}<article class="project-public-card"><span>{{ project.status }}</span><h3>{{ project.title }}</h3><p>{{ project.summary }}</p>{% if project.link %}<a class="text-link" href="{{ project.link }}" target="_blank" rel="noreferrer">Open project →</a>{% endif %}</article>{% else %}
+    <article class="project-public-card featured-project"><span>Toror approach</span><h3>Products are built for use, not just for display.</h3><p>Our public portfolio is managed from the private workspace. New projects can be published without editing the site code.</p><a class="text-link" href="/contact">Discuss a project →</a></article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="content-section values-section">
+  <div class="section-heading"><div><span class="section-kicker">Why Toror</span><h2>A clear path from idea to useful technology.</h2></div></div>
+  <div class="value-grid"><div><strong>Clarity</strong><p>We aim to make systems understandable for the people who will actually use them.</p></div><div><strong>Fit</strong><p>The product should fit the organisation, rather than forcing the organisation around the product.</p></div><div><strong>Continuity</strong><p>Deployment is a milestone, not the end of the relationship.</p></div></div>
+</section>
+
+<section class="content-section cta-panel"><div><span class="section-kicker">Have a problem worth solving?</span><h2>Let’s turn it into a clear digital solution.</h2><p>Tell us what you need, what you already have, and where you want to go.</p></div><a class="btn primary" href="/contact">Contact Toror</a></section>
 {% endblock %}

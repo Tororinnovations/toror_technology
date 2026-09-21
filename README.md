@@ -1,36 +1,42 @@
-# Toror Technology and Innovations Ltd
+# Toror Technology Company Ltd — public corporate site + private administration
 
-A Flask website with a login-first public flow, private project uploads, a hidden share-link vault for videos, and a chat inbox with live polling.
+The public website is intentionally open: visitors do not register, log in, or create an account. The public experience includes the company home page, who-we-are and history sections, services, selected work, FAQs, contact/enquiries, privacy, terms, and certificate verification.
 
-## Main flow
-- `/login` is the first public page.
-- Users request a login email and then verify the link sent through the company email account.
-- After login, they land on `/portal`.
-- The hidden private route for the workspace is `/xtspolsjhulupjoppsuplmkzcodup`.
+## Private administration
 
-## Environment variables
+Administrator access is intentionally separate from the public site:
+
+- Private entry path: `/promise212324`
+- Render variable: `ADMIN_NAME`
+- Render variable: `ADMIN_PASSWORD`
+- Render variable: `SECRET_KEY`
+
+Keep these values only in Render environment variables; do not place them in templates or source control.
+
+The admin workspace retains the existing projects, vault, contacts, messages, users, logo, and site settings features and adds a certificate studio.
+
+## Certificates
+
+The certificate studio generates a PDF certificate for a software customer or business recipient. Each certificate gets a unique Toror serial number, a tamper-evident HMAC signature, and a QR code that opens the public verification page. Verification checks the signed certificate record stored by the site.
+
+The system makes imitation substantially harder and provides an independent verification path; no visual document can be guaranteed to be literally impossible to counterfeit.
+
+## Environment
+
+Typical deployment variables:
+
 - `SECRET_KEY`
-- `ADMIN_USERNAME`
-- `ADMIN_PASSWORD` (or `RENDER_ENV_PASSWORD`)
-- `ADMIN_EMAIL`
-- `ADMIN_DEVELOPMENT_OPEN` (`1` for local/no-password admin access, `0` for hosted credentials; default is `0`)
-- `SMTP_HOST`
-- `SMTP_PORT`
-- `SMTP_USER`
-- `SMTP_PASS`
-- `SMTP_FROM`
-- `PRIMARY_EMAIL`
-- `TOROR_DB_PATH`
-- `TOROR_DATA_DIR`
+- `ADMIN_NAME`
+- `ADMIN_PASSWORD`
+- `PRIMARY_EMAIL` (optional)
+- `PRIMARY_PHONE` (optional)
+- `TOROR_DATA_DIR` (optional)
+- `TOROR_DB_PATH` (optional)
 
-## Run locally
+## Run
+
 ```bash
-pip install -r requirements.txt
-python app.py
+gunicorn app:app
 ```
 
-## Notes
-- Logo upload is supported from the private settings page.
-- Projects can include PDFs, spreadsheets, images, documents, and videos.
-- Vault videos are shared by private token links like `/v/<token>`.
-- The site uses SQLite, a PWA shell, and cached static assets.
+SQLite is used by default in `data/toror.db`. The existing database is retained and upgraded automatically for the new enquiry and certificate fields.

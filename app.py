@@ -1,8 +1,11 @@
+import hashlib
+import hmac
 import mimetypes
 import os
 import secrets
 import smtplib
 import sqlite3
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from functools import wraps
@@ -23,6 +26,16 @@ from flask import (
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
+
+try:
+    import qrcode
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.pdfgen import canvas
+    REPORTING_AVAILABLE = True
+except ImportError:  # pragma: no cover - deployment dependency guard
+    REPORTING_AVAILABLE = False
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / os.environ.get('TOROR_DATA_DIR', 'data')
@@ -65,16 +78,12 @@ def close_db(_exc):
         db.close()
 
 
-def get_admin_username():
-    return os.environ.get('ADMIN_USERNAME', 'admin')
+def get_admin_name():
+    return os.environ.get('ADMIN_NAME', '')
 
 
 def get_admin_password():
-    return (
-        os.environ.get('RENDER_ENV_PASSWORD')
-        or os.environ.get('ADMIN_PASSWORD')
-        or 'change-me'
-    )
+    return os.environ.get('ADMIN_PASSWORD', '')
 
 
 def query_one(sql, args=()):
@@ -104,7 +113,12 @@ def init_db():
         name TEXT NOT NULL,
         email TEXT,
         phone TEXT,
+        company TEXT,
+        subject TEXT,
+        message TEXT,
         notes TEXT,
+        status TEXT NOT NULL DEFAULT 'New',
+        source TEXT NOT NULL DEFAULT 'Admin',
         created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS projects (
@@ -154,6 +168,20 @@ def init_db():
         used INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS certificates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        serial TEXT NOT NULL UNIQUE,
+        verification_sig TEXT NOT NULL,
+        recipient_name TEXT NOT NULL,
+        business_name TEXT NOT NULL,
+        software_name TEXT NOT NULL,
+        award_title TEXT NOT NULL,
+        awarded_by TEXT NOT NULL,
+        award_date TEXT NOT NULL,
+        notes TEXT,
+        pdf_filename TEXT,
+        created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -172,35 +200,64 @@ def init_db():
     );
     '''
     defaults = {
-        'site_name': 'Toror Technology and Innovations Ltd',
-        'developer_name': 'Developed by me',
-        'tagline': 'Toror Technology and Innovations Ltd',
-        'primary_email': os.environ.get('PRIMARY_EMAIL', 'hello@example.com'),
-        'hero_text': 'Register to continue.',
+        'site_name': 'Toror Technology Company Ltd',
+        'developer_name': get_admin_name() or 'Toror Technology Company Ltd',
+        'tagline': 'Technology that turns ideas into working products.',
+        'primary_email': os.environ.get('PRIMARY_EMAIL', ''),
+        'primary_phone': os.environ.get('PRIMARY_PHONE', ''),
+        'hero_text': 'We design, build, deploy, and support practical digital systems for organisations, businesses, and communities.',
+        'hero_kicker': 'Technology • Software • Digital Solutions',
+        'about_text': 'Toror Technology Company Ltd is a technology company focused on practical software, digital platforms, automation, and technology services that help organisations work better and serve people more effectively.',
+        'history_text': 'Our history is built around learning by doing: understanding real operational problems, turning them into clear digital products, and continuing to improve those products as the needs of our clients grow.',
+        'mission_text': 'To build useful, dependable technology that solves real problems and creates lasting value.',
+        'vision_text': 'To become a trusted technology partner for organisations that want to modernise, simplify, and grow.',
+        'service_text': 'Software development, web platforms, business systems, automation, deployment, and tailored digital solutions.',
+        'address_text': '',
+        'footer_text': 'Toror Technology Company Ltd — practical technology, thoughtfully built.',
+        'meta_description': 'Toror Technology Company Ltd builds practical software, digital platforms, automation, and technology solutions.',
         'logo_path': '/static/default-logo.svg',
         'theme_mode': 'light',
-        'accent_color': '#2563eb',
-        'login_enabled': '1',
-        'chat_enabled': '1',
+        'accent_color': '#5A0F18',
+        'login_enabled': '0',
+        'chat_enabled': '0',
     }
     db = sqlite3.connect(DB_PATH)
     try:
         db.executescript(schema)
         for key, value in defaults.items():
             db.execute('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)', (key, value))
+        legacy_to_new = {
+            'site_name': ('Toror Technology and Innovations Ltd', 'Toror Technology Company Ltd'),
+            'developer_name': ('Developed by me', get_admin_name() or 'Toror Technology Company Ltd'),
+            'tagline': ('Toror Technology and Innovations Ltd', defaults['tagline']),
+            'hero_text': ('Register to continue.', defaults['hero_text']),
+            'primary_email': ('hello@example.com', ''),
+        }
+        for key, (legacy, updated) in legacy_to_new.items():
+            db.execute('UPDATE settings SET value=? WHERE key=? AND value=?', (updated, key, legacy))
         db.commit()
     finally:
         db.close()
 
-    # Lightweight migration for older databases.
+    # Lightweight migrations for older databases.
     db = sqlite3.connect(DB_PATH)
     try:
         db.row_factory = sqlite3.Row
-        cols = {row['name'] for row in db.execute('PRAGMA table_info(chat_messages)')}
-        if 'owner_user_id' not in cols:
+        chat_cols = {row['name'] for row in db.execute('PRAGMA table_info(chat_messages)')}
+        if 'owner_user_id' not in chat_cols:
             db.execute('ALTER TABLE chat_messages ADD COLUMN owner_user_id INTEGER')
-        if 'owner_email' not in cols:
+        if 'owner_email' not in chat_cols:
             db.execute('ALTER TABLE chat_messages ADD COLUMN owner_email TEXT')
+        contact_cols = {row['name'] for row in db.execute('PRAGMA table_info(contacts)')}
+        for name, sql in {
+            'company': 'ALTER TABLE contacts ADD COLUMN company TEXT',
+            'subject': 'ALTER TABLE contacts ADD COLUMN subject TEXT',
+            'message': 'ALTER TABLE contacts ADD COLUMN message TEXT',
+            'status': "ALTER TABLE contacts ADD COLUMN status TEXT NOT NULL DEFAULT 'New'",
+            'source': "ALTER TABLE contacts ADD COLUMN source TEXT NOT NULL DEFAULT 'Admin'",
+        }.items():
+            if name not in contact_cols:
+                db.execute(sql)
         db.commit()
     finally:
         db.close()
@@ -312,8 +369,8 @@ def user_required(fn):
 @app.before_request
 def protect_admin_routes():
     path = request.path or ''
-    if path == '/xtspolsjhulupjoppsuplmkzcodup' or path.startswith('/admin') or path.startswith('/api/admin'):
-        if path in {'/xtspolsjhulupjoppsuplmkzcodup'}:
+    if path == '/promise212324' or path.startswith('/admin') or path.startswith('/api/admin'):
+        if path in {'/promise212324'}:
             return None
         if not is_admin():
             return redirect(url_for('admin_entry'))
@@ -398,20 +455,33 @@ def capture_client_context(form=None):
 @app.context_processor
 def inject_globals():
     return {
-        'site_name': get_setting('site_name', 'Toror Technology and Innovations Ltd'),
-        'developer_name': get_setting('developer_name', 'Developed by me'),
+        'site_name': get_setting('site_name', 'Toror Technology Company Ltd'),
+        'developer_name': get_setting('developer_name', get_admin_name() or 'Toror Technology Company Ltd'),
         'tagline': get_setting('tagline', ''),
         'hero_text': get_setting('hero_text', ''),
+        'hero_kicker': get_setting('hero_kicker', ''),
+        'about_text': get_setting('about_text', ''),
+        'history_text': get_setting('history_text', ''),
+        'mission_text': get_setting('mission_text', ''),
+        'vision_text': get_setting('vision_text', ''),
+        'service_text': get_setting('service_text', ''),
         'primary_email': get_setting('primary_email', ''),
+        'primary_phone': get_setting('primary_phone', ''),
+        'address_text': get_setting('address_text', ''),
+        'footer_text': get_setting('footer_text', ''),
+        'meta_description': get_setting('meta_description', ''),
         'logo_path': public_logo(),
         'theme_mode': get_setting('theme_mode', 'light'),
-        'accent_color': get_setting('accent_color', '#2563eb'),
+        'accent_color': get_setting('accent_color', '#5A0F18'),
         'is_admin': is_admin,
-        'show_nav': is_user_logged_in() or is_admin(),
+        'show_nav': True,
         'user_email': session.get('user_email'),
         'user_id': session.get('user_id'),
         'display_name': user_display_name(),
         'admin_mode': is_admin(),
+        'admin_name': get_admin_name(),
+        'current_year': datetime.now().year,
+        'current_date_label': datetime.now().strftime('%d %B %Y'),
     }
 
 
@@ -426,206 +496,157 @@ def add_cache_headers(resp):
 
 @app.route('/')
 def index():
-    if is_user_logged_in() or is_admin():
-        return redirect(url_for('portal'))
-    return redirect(url_for('register'))
+    projects = query_all("SELECT * FROM projects WHERE status <> 'Draft' ORDER BY id DESC LIMIT 6")
+    return render_template('home.html', projects=projects)
 
 
-@app.route('/portal')
-@user_required
-def portal():
-    projects = query_all('SELECT * FROM projects ORDER BY id DESC LIMIT 6')
-    contacts = query_all('SELECT * FROM contacts ORDER BY id DESC LIMIT 6')
-    return render_template('portal.html', projects=projects, contacts=contacts)
+@app.route('/about')
+def about():
+    return render_template('about.html')
 
 
-@app.route('/projects')
-@user_required
-def projects():
-    rows = query_all('SELECT * FROM projects ORDER BY id DESC')
+@app.route('/services')
+def services():
+    return render_template('services.html')
+
+
+@app.route('/work')
+def work():
+    rows = query_all("SELECT * FROM projects WHERE status <> 'Draft' ORDER BY id DESC")
     file_map = {}
     for row in query_all('SELECT * FROM project_files ORDER BY id DESC'):
         file_map.setdefault(row['project_id'], []).append(row)
     return render_template('projects.html', projects=rows, project_files=file_map)
 
 
+@app.route('/projects')
+def projects():
+    return redirect(url_for('work'))
+
+
+@app.route('/portal')
+def portal():
+    return redirect(url_for('index'))
+
+
 @app.route('/profile')
-@user_required
 def profile():
-    return render_template('profile.html')
+    return redirect(url_for('index'))
 
 
 @app.route('/chat')
-@user_required
 def chat():
-    if is_admin():
-        return redirect(url_for('admin_chat'))
-    owner_id = current_chat_owner_id()
-    messages = query_all(
-        'SELECT * FROM chat_messages WHERE owner_user_id=? ORDER BY id ASC LIMIT 100',
-        (owner_id,),
-    )
-    return render_template('chat.html', messages=messages)
+    return redirect(url_for('contact'))
+
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    return redirect(url_for('index'))
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    return redirect(url_for('index'))
+
+
+@app.route('/logout')
+def logout():
+    session.pop('user_id', None)
+    session.pop('user_email', None)
+    session.pop('user_username', None)
+    return redirect(url_for('index'))
+
+
+@app.route('/contact', methods=['GET', 'POST'])
+def contact():
+    if request.method == 'POST':
+        name = (request.form.get('name') or '').strip()
+        email = (request.form.get('email') or '').strip()
+        phone = (request.form.get('phone') or '').strip()
+        company = (request.form.get('company') or '').strip()
+        subject = (request.form.get('subject') or '').strip()
+        message = (request.form.get('message') or '').strip()
+        website = (request.form.get('website') or '').strip()  # honeypot
+        if website:
+            flash('Thank you. Your message was received.', 'success')
+            return redirect(url_for('contact'))
+        if not name or not (email or phone) or not message:
+            flash('Please provide your name, a phone or email, and a message.', 'error')
+            return redirect(url_for('contact'))
+        execute(
+            'INSERT INTO contacts(name,email,phone,company,subject,message,notes,status,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            (name[:160], email[:160], phone[:80], company[:160], subject[:200], message[:2500], message[:2500], 'New', 'Website', now_iso()),
+        )
+        flash('Thank you. Your message has been sent to Toror Technology Company Ltd.', 'success')
+        return redirect(url_for('contact'))
+    return render_template('contact.html')
+
+
+@app.route('/faq')
+def faq():
+    return render_template('faq.html')
+
+
+@app.route('/privacy')
+def privacy():
+    return render_template('privacy.html')
+
+
+@app.route('/terms')
+def terms():
+    return render_template('terms.html')
 
 
 @app.route('/api/chat/poll')
 @user_required
 def chat_poll():
-    if is_admin():
-        return jsonify([])
-    last_id = int(request.args.get('last_id', '0'))
-    owner_id = current_chat_owner_id()
-    rows = query_all(
-        'SELECT * FROM chat_messages WHERE owner_user_id=? AND id > ? ORDER BY id ASC',
-        (owner_id, last_id),
-    )
-    return jsonify([dict(row) for row in rows])
+    return jsonify([])
 
 
 @app.route('/api/chat/send', methods=['POST'])
-@user_required
 def chat_send():
     if is_admin():
-        return jsonify({'ok': False, 'error': 'Use the admin chat area.'}), 403
-    message = (request.form.get('message') or '').strip()
-    edit_id = (request.form.get('edit_id') or '').strip()
-    if not message:
-        return jsonify({'ok': False, 'error': 'Message required.'}), 400
-    sender = current_chat_sender()
-    owner_id = current_chat_owner_id()
-    owner_email = session.get('user_email')
-    if edit_id:
-        existing = query_one(
-            'SELECT * FROM chat_messages WHERE id=? AND owner_user_id=?',
-            (edit_id, owner_id),
-        )
-        if existing and existing['sender'] == sender:
-            execute(
-                'UPDATE chat_messages SET message=?, edited=1, edited_at=? WHERE id=? AND owner_user_id=?',
-                (message[:1200], now_iso(), edit_id, owner_id),
-            )
-            return jsonify({'ok': True, 'edited': True})
-    execute(
-        'INSERT INTO chat_messages(sender, role, owner_user_id, owner_email, message, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        (sender, 'visitor', owner_id, owner_email, message[:1200], now_iso()),
-    )
-    return jsonify({'ok': True, 'edited': False})
+        message = (request.form.get('message') or '').strip()
+        edit_id = (request.form.get('edit_id') or '').strip()
+        if not message:
+            return jsonify({'ok': False, 'error': 'Message required.'}), 400
+        sender = get_admin_name() or 'Toror Admin'
+        if edit_id:
+            existing = query_one('SELECT * FROM chat_messages WHERE id=? AND role=?', (edit_id, 'admin'))
+            if existing:
+                execute('UPDATE chat_messages SET message=?, edited=1, edited_at=? WHERE id=?', (message[:1200], now_iso(), edit_id))
+                return jsonify({'ok': True, 'edited': True})
+        execute('INSERT INTO chat_messages(sender,role,owner_user_id,owner_email,message,created_at) VALUES (?,?,?,?,?,?)', (sender,'admin',None,session.get('user_email'),message[:1200],now_iso()))
+        return jsonify({'ok': True, 'edited': False})
+    return jsonify({'ok': False, 'error': 'Visitor chat is not enabled on the public site.'}), 410
 
 
 @app.route('/api/chat/delete/<int:message_id>', methods=['POST'])
-@user_required
 def chat_delete(message_id):
-    if is_admin():
-        return jsonify({'ok': False, 'error': 'Use the admin chat area.'}), 403
-    owner_id = current_chat_owner_id()
-    row = query_one(
-        'SELECT * FROM chat_messages WHERE id=? AND owner_user_id=?',
-        (message_id, owner_id),
-    )
-    sender = current_chat_sender()
-    if not row or row['sender'] != sender:
-        return jsonify({'ok': False, 'error': 'Not allowed.'}), 403
-    execute('DELETE FROM chat_messages WHERE id=? AND owner_user_id=?', (message_id, owner_id))
+    if not is_admin():
+        return jsonify({'ok': False, 'error': 'Visitor chat is not enabled on the public site.'}), 410
+    execute('DELETE FROM chat_messages WHERE id=?', (message_id,))
     return jsonify({'ok': True})
-
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        name = (request.form.get('name') or '').strip()
-        username = (request.form.get('username') or '').strip()
-        email = (request.form.get('email') or '').strip().lower()
-        password = request.form.get('password') or ''
-        if not name or not username or not email or not password:
-            flash('Please complete all fields.', 'error')
-            return redirect(url_for('register'))
-        if query_one('SELECT 1 FROM users WHERE lower(name)=lower(?) OR lower(username)=lower(?) OR lower(email)=lower(?) LIMIT 1', (name, username, email)):
-            flash('That name, username, or email already exists. Use a new one.', 'error')
-            return redirect(url_for('register'))
-        ctx = capture_client_context()
-        execute(
-            'INSERT INTO users(name, username, email, password_hash, location_text, location_lat, location_lng, device_info, ip_address, created_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-            (name, username, email, generate_password_hash(password), ctx['location_text'], ctx['location_lat'], ctx['location_lng'], ctx['device_info'], ctx['ip_address'], now_iso(), now_iso()),
-        )
-        flash('Account created. Please log in.', 'success')
-        return redirect(url_for('login'))
-    return render_template('register.html')
-
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        identifier = (request.form.get('identifier') or '').strip().lower()
-        password = request.form.get('password') or ''
-        if not identifier or not password:
-            flash('Enter your username or email and password.', 'error')
-            return redirect(url_for('login'))
-        if get_setting('login_enabled', '1') != '1':
-            flash('Access is temporarily closed.', 'error')
-            return redirect(url_for('login'))
-        user = query_one('SELECT * FROM users WHERE lower(username)=? OR lower(email)=? LIMIT 1', (identifier, identifier))
-        if not user or not user['is_active']:
-            flash('Invalid login details.', 'error')
-            return redirect(url_for('login'))
-        if not check_password_hash(user['password_hash'], password):
-            flash('Invalid login details.', 'error')
-            return redirect(url_for('login'))
-        ctx = capture_client_context()
-        execute(
-            'UPDATE users SET location_text=?, location_lat=?, location_lng=?, device_info=?, ip_address=?, last_login_at=?, last_seen_at=? WHERE id=?',
-            (ctx['location_text'], ctx['location_lat'], ctx['location_lng'], ctx['device_info'], ctx['ip_address'], now_iso(), now_iso(), user['id']),
-        )
-        session['user_id'] = user['id']
-        session['user_email'] = user['email']
-        session['user_username'] = user['username']
-        flash('You are now logged in.', 'success')
-        return redirect(url_for('portal'))
-    return render_template('login.html')
 
 
 @app.route('/login/verify/<token>')
 def login_verify(token):
-    row = query_one('SELECT * FROM login_tokens WHERE token=? AND used=0', (token,))
-    if not row:
-        abort(404)
-    expires_at = datetime.fromisoformat(row['expires_at'])
-    if expires_at < datetime.now(timezone.utc):
-        flash('That login link has expired.', 'error')
-        return redirect(url_for('login'))
-    execute('UPDATE login_tokens SET used=1 WHERE token=?', (token,))
-    user = query_one('SELECT * FROM users WHERE lower(email)=lower(?) LIMIT 1', (row['email'],))
-    if user:
-        session['user_id'] = user['id']
-        session['user_email'] = user['email']
-        session['user_username'] = user['username']
-    flash('You are now logged in.', 'success')
-    return redirect(url_for('portal'))
+    return redirect(url_for('index'))
 
 
-@app.route('/logout')
-def logout():
-    session.clear()
-    flash('Logged out.', 'success')
-    return redirect(url_for('register'))
-
-
-@app.route('/xtspolsjhulupjoppsuplmkzcodup', methods=['GET', 'POST'])
+@app.route('/promise212324', methods=['GET', 'POST'])
 def admin_entry():
-    open_mode = os.environ.get('ADMIN_DEVELOPMENT_OPEN', '0') == '1'
-    if open_mode and request.method == 'GET' and not session.get('admin_logged_in'):
-        session['admin_logged_in'] = True
-        session['user_email'] = os.environ.get('ADMIN_EMAIL', 'admin@local')
-        flash('Admin access opened for local use.', 'success')
-        return redirect(url_for('admin_dashboard'))
+    open_mode = False
     if request.method == 'POST':
-        username = request.form.get('username', '').strip()
+        admin_name = request.form.get('admin_name', '').strip()
         password = request.form.get('password', '').strip()
-        if username == get_admin_username() and password == get_admin_password():
+        if admin_name == get_admin_name() and password == get_admin_password() and admin_name and password:
+            session.clear()
             session['admin_logged_in'] = True
-            session['user_email'] = os.environ.get('ADMIN_EMAIL', 'admin@local')
-            flash('Signed in.', 'success')
+            session['user_email'] = os.environ.get('ADMIN_EMAIL', '')
+            flash('Welcome to the private administration workspace.', 'success')
             return redirect(url_for('admin_dashboard'))
-        flash('Invalid credentials.', 'error')
+        flash('Invalid administrator credentials.', 'error')
     return render_template('admin_login.html', open_mode=open_mode)
 
 
@@ -638,7 +659,7 @@ def admin_redirect():
 def admin_logout():
     session.clear()
     flash('Session closed.', 'success')
-    return redirect(url_for('login'))
+    return redirect(url_for('admin_entry'))
 
 
 @app.route('/admin/dashboard')
@@ -650,9 +671,11 @@ def admin_dashboard():
         'projects': query_one('SELECT COUNT(*) c FROM projects')['c'],
         'vault': query_one('SELECT COUNT(*) c FROM vault_files')['c'],
         'messages': query_one('SELECT COUNT(*) c FROM chat_messages')['c'],
+        'certificates': query_one('SELECT COUNT(*) c FROM certificates')['c'],
     }
     recent_users = query_all('SELECT * FROM users ORDER BY id DESC LIMIT 8')
-    return render_template('admin_dashboard.html', stats=stats, recent_users=recent_users)
+    recent_contacts = query_all('SELECT * FROM contacts ORDER BY id DESC LIMIT 8')
+    return render_template('admin_dashboard.html', stats=stats, recent_users=recent_users, recent_contacts=recent_contacts, admin_name=get_admin_name())
 
 
 @app.route('/admin/users')
@@ -713,14 +736,31 @@ def edit_user(user_id):
 @admin_required
 def admin_settings():
     if request.method == 'POST':
-        set_setting('site_name', request.form.get('site_name', '').strip() or 'Toror Technology and Innovations Ltd')
-        set_setting('developer_name', request.form.get('developer_name', '').strip())
-        set_setting('tagline', request.form.get('tagline', '').strip())
-        set_setting('primary_email', request.form.get('primary_email', '').strip())
-        set_setting('hero_text', request.form.get('hero_text', '').strip())
-        set_setting('theme_mode', request.form.get('theme_mode', 'light'))
-        set_setting('accent_color', request.form.get('accent_color', '#2563eb'))
-        flash('Settings updated.', 'success')
+        fields = {
+            'site_name': 'Toror Technology Company Ltd',
+            'developer_name': '',
+            'tagline': '',
+            'primary_email': '',
+            'primary_phone': '',
+            'address_text': '',
+            'hero_kicker': '',
+            'hero_text': '',
+            'about_text': '',
+            'history_text': '',
+            'mission_text': '',
+            'vision_text': '',
+            'service_text': '',
+            'footer_text': '',
+            'meta_description': '',
+            'theme_mode': 'light',
+            'accent_color': '#5A0F18',
+        }
+        for key, fallback in fields.items():
+            value = request.form.get(key, '').strip()
+            if key == 'site_name' and not value:
+                value = fallback
+            set_setting(key, value)
+        flash('Public site settings updated.', 'success')
         return redirect(url_for('admin_settings'))
     return render_template('admin_settings.html')
 
@@ -755,8 +795,8 @@ def admin_contacts():
                 if len(parts) < 2:
                     continue
                 execute(
-                    'INSERT INTO contacts(name,email,phone,notes,created_at) VALUES (?,?,?,?,?)',
-                    (parts[0], parts[1], parts[2] if len(parts) > 2 else '', parts[3] if len(parts) > 3 else '', now_iso()),
+                    'INSERT INTO contacts(name,email,phone,company,subject,message,notes,status,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    (parts[0], parts[1], parts[2] if len(parts) > 2 else '', parts[3] if len(parts) > 3 else '', '', parts[4] if len(parts) > 4 else '', parts[4] if len(parts) > 4 else '', 'Imported', 'CSV', now_iso()),
                 )
                 imported += 1
             flash(f'Imported {imported} contacts.', 'success')
@@ -764,11 +804,14 @@ def admin_contacts():
         name = request.form.get('name', '').strip()
         email = request.form.get('email', '').strip()
         phone = request.form.get('phone', '').strip()
+        company = request.form.get('company', '').strip()
+        subject = request.form.get('subject', '').strip()
+        message = request.form.get('message', '').strip()
         notes = request.form.get('notes', '').strip()
         if name:
             execute(
-                'INSERT INTO contacts(name,email,phone,notes,created_at) VALUES (?,?,?,?,?)',
-                (name, email, phone, notes, now_iso()),
+                'INSERT INTO contacts(name,email,phone,company,subject,message,notes,status,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                (name, email, phone, company, subject, message, notes, 'New', 'Admin', now_iso()),
             )
             flash('Contact saved.', 'success')
         return redirect(url_for('admin_contacts'))
@@ -791,11 +834,15 @@ def edit_contact(contact_id):
     if not contact:
         abort(404)
     if request.method == 'POST':
-        execute('UPDATE contacts SET name=?, email=?, phone=?, notes=? WHERE id=?', (
+        execute('UPDATE contacts SET name=?, email=?, phone=?, company=?, subject=?, message=?, notes=?, status=? WHERE id=?', (
             request.form.get('name', '').strip(),
             request.form.get('email', '').strip(),
             request.form.get('phone', '').strip(),
+            request.form.get('company', '').strip(),
+            request.form.get('subject', '').strip(),
+            request.form.get('message', '').strip(),
             request.form.get('notes', '').strip(),
+            request.form.get('status', 'New').strip() or 'New',
             contact_id,
         ))
         flash('Contact updated.', 'success')
@@ -988,9 +1035,174 @@ def admin_chat():
     return render_template('admin_chat.html', messages=messages)
 
 
+
+def certificate_payload(row):
+    return '|'.join(str(row.get(k, '')) for k in ('serial','recipient_name','business_name','software_name','award_title','awarded_by','award_date'))
+
+
+def certificate_signature(payload):
+    secret = (os.environ.get('SECRET_KEY') or get_admin_password() or 'toror-certificate-secret').encode('utf-8')
+    return hmac.new(secret, payload.encode('utf-8'), hashlib.sha256).hexdigest()[:28].upper()
+
+
+def draw_certificate(c, row, verification_url):
+    width, height = landscape(A4)
+    maroon = colors.HexColor('#641521')
+    dark_maroon = colors.HexColor('#3E0B14')
+    sky = colors.HexColor('#79CBE8')
+    sky_dark = colors.HexColor('#2C7894')
+    gold = colors.HexColor('#C9A65A')
+    ink = colors.HexColor('#17110F')
+    paper = colors.HexColor('#EFFBFF')
+    c.setFillColor(paper); c.rect(0,0,width,height,fill=1,stroke=0)
+    c.setFillColor(maroon); c.rect(0,0,width,22,fill=1,stroke=0); c.rect(0,height-22,width,22,fill=1,stroke=0)
+    # layered geometric border
+    for inset, stroke, sw in [(28, maroon, 3),(36, gold, 1.2),(44, sky_dark, 1)]:
+        c.setStrokeColor(stroke); c.setLineWidth(sw); c.rect(inset,inset,width-2*inset,height-2*inset,fill=0,stroke=1)
+    # fine-line security pattern / rosettes
+    c.saveState(); c.setStrokeColor(colors.Color(sky.red, sky.green, sky.blue, alpha=0.35)); c.setLineWidth(0.55)
+    for x in range(65, int(width)-65, 18):
+        c.line(x,55,x+52,height-55); c.line(x,height-55,x+52,55)
+    c.restoreState()
+    # central medallion
+    cx, cy = width/2, height*0.64
+    c.setFillColor(sky); c.circle(cx, cy, 48, fill=1, stroke=0)
+    c.setStrokeColor(maroon); c.setLineWidth(4); c.circle(cx,cy,52,fill=0,stroke=1)
+    c.setFillColor(dark_maroon); c.setFont('Helvetica-Bold', 28); c.drawCentredString(cx, cy-10, 'T')
+    c.setStrokeColor(gold); c.setLineWidth(2); c.circle(cx,cy,58,fill=0,stroke=1)
+    # Header
+    c.setFillColor(maroon); c.setFont('Helvetica-Bold', 12); c.drawCentredString(cx, height-63, 'TOROR TECHNOLOGY COMPANY LTD')
+    c.setFillColor(ink); c.setFont('Helvetica-Bold', 25); c.drawCentredString(cx, height-110, 'CERTIFICATE OF TECHNOLOGY PARTNERSHIP')
+    c.setFillColor(sky_dark); c.setFont('Helvetica', 10); c.drawCentredString(cx, height-132, 'A digitally issued and independently verifiable recognition')
+    # Body
+    c.setFillColor(ink); c.setFont('Helvetica', 11); c.drawCentredString(cx, height*0.46, 'This certificate is proudly presented to')
+    c.setFillColor(dark_maroon); c.setFont('Helvetica-Bold', 27); c.drawCentredString(cx, height*0.39, row['recipient_name'])
+    c.setFillColor(ink); c.setFont('Helvetica', 11); c.drawCentredString(cx, height*0.33, f"of {row['business_name']}")
+    c.setFont('Helvetica', 11); c.drawCentredString(cx, height*0.27, f"for acquiring and adopting {row['software_name']} from Toror Technology Company Ltd.")
+    c.setFillColor(maroon); c.setFont('Helvetica-Bold', 13); c.drawCentredString(cx, height*0.21, row['award_title'])
+    if row['notes']:
+        c.setFillColor(ink); c.setFont('Helvetica', 9); c.drawCentredString(cx, height*0.165, row['notes'][:170])
+    # signatures
+    leftx, rightx = 140, 520
+    c.setStrokeColor(ink); c.setLineWidth(0.8); c.line(leftx-55, 72, leftx+100, 72); c.line(rightx-100,72,rightx+55,72)
+    c.setFillColor(ink); c.setFont('Helvetica-Bold', 9); c.drawString(leftx-55, 58, row['awarded_by']); c.drawRightString(rightx+55, 58, row['award_date'])
+    c.setFont('Helvetica', 8); c.setFillColor(sky_dark); c.drawString(leftx-55, 45, 'Awarded by'); c.drawRightString(rightx+55,45,'Award date')
+    # QR
+    qr = qrcode.QRCode(version=4, box_size=3, border=2); qr.add_data(verification_url); qr.make(fit=True)
+    img = qr.make_image(fill_color='#3E0B14', back_color='#EFFBFF').convert('RGB')
+    buf = BytesIO(); img.save(buf, format='PNG'); buf.seek(0)
+    from reportlab.lib.utils import ImageReader
+    c.drawImage(ImageReader(buf), width-155, 70, 78, 78, preserveAspectRatio=True, mask='auto')
+    c.setFillColor(dark_maroon); c.setFont('Helvetica-Bold', 7); c.drawRightString(width-62, 58, 'SCAN TO VERIFY')
+    c.setFillColor(ink); c.setFont('Helvetica', 7); c.drawRightString(width-62, 47, row['serial'])
+    c.setFillColor(sky_dark); c.setFont('Helvetica-Bold', 6); c.drawRightString(width-62, 36, 'AUTH CODE')
+    c.setFillColor(ink); c.setFont('Helvetica', 5.6); c.drawRightString(width-62, 28, row['verification_sig'])
+    c.showPage(); c.save()
+
+
+def create_certificate_pdf(row):
+    if not REPORTING_AVAILABLE:
+        raise RuntimeError('Certificate generation dependencies are not installed.')
+    folder = UPLOAD_DIR / 'certificates'; folder.mkdir(parents=True, exist_ok=True)
+    filename = f"{row['serial']}.pdf"; path = folder / filename
+    verify_url = request.url_root.rstrip('/') + url_for('verify_certificate', serial=row['serial'], sig=row['verification_sig'])
+    c = canvas.Canvas(str(path), pagesize=landscape(A4)); draw_certificate(c, row, verify_url)
+    return str(path.relative_to(BASE_DIR))
+
+
+@app.route('/admin/certificates', methods=['GET','POST'])
+@admin_required
+def admin_certificates():
+    if request.method == 'POST':
+        recipient = request.form.get('recipient_name','').strip()
+        business = request.form.get('business_name','').strip()
+        software = request.form.get('software_name','').strip()
+        award_title = request.form.get('award_title','').strip() or 'Technology Partnership Recognition'
+        awarded_by = request.form.get('awarded_by','').strip() or get_admin_name()
+        award_date = request.form.get('award_date','').strip() or datetime.now().strftime('%d %B %Y')
+        notes = request.form.get('notes','').strip()
+        if not recipient or not business or not software or not awarded_by:
+            flash('Recipient, business, software, and awarded-by name are required.', 'error')
+            return redirect(url_for('admin_certificates'))
+        serial = f"TOROR-{datetime.now().year}-{secrets.token_hex(5).upper()}"
+        while query_one('SELECT 1 FROM certificates WHERE serial=?', (serial,)):
+            serial = f"TOROR-{datetime.now().year}-{secrets.token_hex(5).upper()}"
+        payload = '|'.join([serial, recipient, business, software, award_title, awarded_by, award_date, notes])
+        sig = certificate_signature(payload)
+        row = {'serial':serial,'verification_sig':sig,'recipient_name':recipient,'business_name':business,'software_name':software,'award_title':award_title,'awarded_by':awarded_by,'award_date':award_date,'notes':notes}
+        try:
+            rel = create_certificate_pdf(row)
+        except RuntimeError as exc:
+            flash(str(exc), 'error')
+            return redirect(url_for('admin_certificates'))
+        execute('INSERT INTO certificates(serial,verification_sig,recipient_name,business_name,software_name,award_title,awarded_by,award_date,notes,pdf_filename,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                (serial,sig,recipient,business,software,award_title,awarded_by,award_date,notes,rel,now_iso()))
+        flash(f'Certificate {serial} created.', 'success')
+        return redirect(url_for('admin_certificates'))
+    certificates = query_all('SELECT * FROM certificates ORDER BY id DESC')
+    return render_template('admin_certificates.html', certificates=certificates)
+
+
+@app.route('/admin/certificates/<int:certificate_id>/download')
+@admin_required
+def admin_certificate_download(certificate_id):
+    row = query_one('SELECT * FROM certificates WHERE id=?', (certificate_id,))
+    if not row:
+        abort(404)
+    path = BASE_DIR / row['pdf_filename'] if row['pdf_filename'] else None
+    if not path or not path.exists():
+        rel = create_certificate_pdf(dict(row))
+        execute('UPDATE certificates SET pdf_filename=? WHERE id=?', (rel,certificate_id))
+        path = BASE_DIR / rel
+    return send_from_directory(str(path.parent), path.name, as_attachment=True, download_name=path.name)
+
+
+@app.route('/admin/certificates/<int:certificate_id>/delete', methods=['POST'])
+@admin_required
+def admin_certificate_delete(certificate_id):
+    row = query_one('SELECT pdf_filename FROM certificates WHERE id=?', (certificate_id,))
+    if row and row['pdf_filename']:
+        try: (BASE_DIR / row['pdf_filename']).unlink(missing_ok=True)
+        except Exception: pass
+    execute('DELETE FROM certificates WHERE id=?', (certificate_id,))
+    flash('Certificate removed.', 'success')
+    return redirect(url_for('admin_certificates'))
+
+
+@app.route('/verify')
+def verify_certificate_form():
+    serial = (request.args.get('serial') or '').strip().upper()
+    sig = (request.args.get('sig') or '').strip().upper()
+    if serial:
+        return verify_certificate(serial, sig_override=sig)
+    return render_template('verify.html', certificate=None, valid=False, serial='')
+
+
+@app.route('/verify/<serial>')
+def verify_certificate(serial, sig_override=None):
+    row = query_one('SELECT * FROM certificates WHERE serial=?', (serial.upper(),))
+    provided = (sig_override if sig_override is not None else request.args.get('sig') or '').upper()
+    valid = bool(row and provided and hmac.compare_digest(provided, row['verification_sig']))
+    return render_template('verify.html', certificate=row, valid=valid, serial=serial.upper())
+
+
 @app.route('/api/version')
 def version():
-    return jsonify({'site_name': get_setting('site_name'), 'generated_at': now_iso()})
+    return jsonify({'site_name': get_setting('site_name'), 'public_mode': True, 'generated_at': now_iso()})
+
+
+@app.route('/robots.txt')
+def robots():
+    base = request.url_root.rstrip('/')
+    return app.response_class(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /promise212324\nSitemap: {base}/sitemap.xml\n', mimetype='text/plain')
+
+
+@app.route('/sitemap.xml')
+def sitemap():
+    base = request.url_root.rstrip('/')
+    paths = ['/', '/about', '/services', '/work', '/faq', '/contact', '/privacy', '/terms', '/verify']
+    xml = '<?xml version="1.0" encoding="UTF-8"?>' + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join(f'<url><loc>{base}{path}</loc></url>' for path in paths) + '</urlset>'
+    return app.response_class(xml, mimetype='application/xml')
 
 
 @app.route('/sw.js')
@@ -1003,10 +1215,10 @@ def manifest():
     return jsonify({
         'name': get_setting('site_name'),
         'short_name': 'Toror Tech',
-        'start_url': '/register',
+        'start_url': '/',
         'display': 'standalone',
-        'background_color': '#ffffff',
-        'theme_color': get_setting('accent_color', '#2563eb'),
+        'background_color': '#79CBE8',
+        'theme_color': '#641521',
         'icons': [
             {'src': '/static/default-logo.svg', 'sizes': '192x192', 'type': 'image/svg+xml'}
         ]

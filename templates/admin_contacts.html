@@ -1,44 +1,7 @@
 {% extends 'base.html' %}
-{% set title = 'Contacts · ' ~ site_name %}
+{% set title = 'Enquiries & contacts | ' ~ site_name %}
 {% block content %}
-  <section class="section">
-    <div class="section-head">
-      <h3>Contacts</h3>
-      <span class="muted">Add individually or import CSV</span>
-    </div>
-    <div class="grid cards two-up">
-      <form class="card" method="post">
-        <h3>Add contact</h3>
-        <div class="form-grid">
-          <div class="field"><label>Name</label><input name="name" required></div>
-          <div class="field"><label>Email</label><input type="email" name="email"></div>
-          <div class="field"><label>Phone</label><input name="phone"></div>
-          <div class="field"><label>Notes</label><input name="notes"></div>
-        </div>
-        <button class="btn primary" type="submit">Save contact</button>
-      </form>
-      <form class="card" method="post" enctype="multipart/form-data">
-        <h3>CSV upload</h3>
-        <p>Columns: name,email,phone,notes</p>
-        <div class="field"><label>CSV file</label><input type="file" name="csv" accept=".csv" required></div>
-        <button class="btn" type="submit">Import CSV</button>
-      </form>
-    </div>
-    <div class="section grid cards list-grid">
-      {% for contact in contacts %}
-        <article class="card">
-          <h3>{{ contact.name }}</h3>
-          <p>{{ contact.email or 'No email' }}{% if contact.phone %}<br>{{ contact.phone }}{% endif %}</p>
-          <div class="hero-ctas">
-            <a class="btn" href="/admin/contacts/{{ contact.id }}/edit">Edit</a>
-            <form method="post" action="/admin/contacts/{{ contact.id }}/delete" onsubmit="return confirm('Delete this contact?')">
-              <button class="btn" type="submit">Delete</button>
-            </form>
-          </div>
-        </article>
-      {% else %}
-        <article class="card"><h3>No contacts yet</h3><p>Upload contacts to begin managing the list.</p></article>
-      {% endfor %}
-    </div>
-  </section>
+<section class="section"><div class="section-head"><div><span class="section-kicker">CRM</span><h3>Enquiries & contacts</h3><p class="muted">Website enquiries are stored here. You can also keep manually added contacts.</p></div></div>
+<div class="grid cards two-up"><form class="card" method="post"><h3>Add contact</h3><div class="form-grid"><div class="field"><label>Name</label><input name="name" required></div><div class="field"><label>Business</label><input name="company"></div><div class="field"><label>Email</label><input type="email" name="email"></div><div class="field"><label>Phone</label><input name="phone"></div><div class="field"><label>Subject</label><input name="subject"></div><div class="field"><label>Status</label><select name="status"><option>New</option><option>Contacted</option><option>Qualified</option><option>Closed</option></select></div></div><div class="field"><label>Message / notes</label><textarea name="message"></textarea></div><button class="btn primary" type="submit">Save contact</button></form><form class="card" method="post" enctype="multipart/form-data"><h3>Import CSV</h3><p class="muted">Accepted columns: name,email,phone,company,message.</p><div class="field"><label>CSV file</label><input type="file" name="csv" accept=".csv" required></div><button class="btn" type="submit">Import contacts</button></form></div>
+<div class="section"><div class="card table-card"><table class="table compact"><thead><tr><th>Name</th><th>Business</th><th>Contact</th><th>Subject</th><th>Status</th><th>Source</th><th>Actions</th></tr></thead><tbody>{% for contact in contacts %}<tr><td>{{ contact.name }}</td><td>{{ contact.company or '—' }}</td><td>{{ contact.email or contact.phone or '—' }}</td><td>{{ contact.subject or 'General enquiry' }}</td><td>{{ contact.status }}</td><td>{{ contact.source }}</td><td><div class="actions-inline"><a class="btn small" href="/admin/contacts/{{ contact.id }}/edit">Edit</a><form method="post" action="/admin/contacts/{{ contact.id }}/delete" onsubmit="return confirm('Delete this contact?')"><button class="btn small" type="submit">Delete</button></form></div></td></tr>{% else %}<tr><td colspan="7">No contacts yet.</td></tr>{% endfor %}</tbody></table></div></div></section>
 {% endblock %}

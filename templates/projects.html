@@ -1,35 +1,7 @@
 {% extends 'base.html' %}
-{% set title = 'Projects · ' ~ site_name %}
+{% set title = 'Our work | ' ~ site_name %}
 {% block content %}
-  <section class="section">
-    <div class="section-head">
-      <h3>Projects</h3>
-      <span class="muted">Files, links, and previews</span>
-    </div>
-    <div class="grid cards project-grid">
-      {% for project in projects %}
-        <article class="card project-card">
-          <div class="project-head">
-            <span class="badge">{{ project.status }}</span>
-            <h3>{{ project.title }}</h3>
-          </div>
-          <p>{{ project.summary }}</p>
-          {% if project.link %}<a class="btn primary" href="{{ project.link }}" target="_blank" rel="noreferrer">Open link</a>{% endif %}
-          {% set files = project_files.get(project.id, []) %}
-          {% if files %}
-            <div class="asset-strip">
-              {% for file in files %}
-                <a class="asset" href="/{{ file.filename }}" target="_blank" rel="noreferrer">
-                  <span class="asset-name">{{ file.original_name }}</span>
-                  <span class="asset-type">{{ file.mime_type or 'file' }}</span>
-                </a>
-              {% endfor %}
-            </div>
-          {% endif %}
-        </article>
-      {% else %}
-        <article class="card"><h3>No projects published</h3><p>Projects will appear here when uploaded.</p></article>
-      {% endfor %}
-    </div>
-  </section>
+<section class="page-hero"><span class="eyebrow">Our work</span><h1>Selected projects, products, and digital systems.</h1><p>A growing portfolio managed from the Toror administration workspace.</p></section>
+<section class="content-section"><div class="project-grid-public">{% for project in projects %}<article class="project-public-card"><span>{{ project.status }}</span><h3>{{ project.title }}</h3><p>{{ project.summary }}</p>{% if project.link %}<a class="text-link" href="{{ project.link }}" target="_blank" rel="noreferrer">Open project →</a>{% endif %}{% set files = project_files.get(project.id, []) %}{% if files %}<div class="asset-public-list">{% for file in files %}<a href="/{{ file.filename }}" target="_blank" rel="noreferrer">{{ file.original_name }} <span>↗</span></a>{% endfor %}</div>{% endif %}</article>{% else %}<article class="project-public-card featured-project"><span>Portfolio</span><h3>Your next project can be here.</h3><p>Projects are published from the private workspace, keeping the public site clean and focused while allowing the company team to update its portfolio.</p><a class="text-link" href="/contact">Discuss your project →</a></article>{% endfor %}</div></section>
+<section class="content-section cta-panel"><div><span class="section-kicker">Build with Toror</span><h2>Have a project that should become a real product?</h2></div><a class="btn primary" href="/contact">Start a conversation</a></section>
 {% endblock %}

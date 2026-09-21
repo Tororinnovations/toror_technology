@@ -3,126 +3,63 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="{{ accent_color }}">
+  <meta name="theme-color" content="#641521">
+  <meta name="description" content="{{ meta_description }}">
+  <meta name="robots" content="index,follow">
+  <link rel="icon" href="{{ logo_path }}">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/static/css/style.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <title>{{ title or site_name }}</title>
-  <script>
-    (function(){
-      const stored = localStorage.getItem('toror-theme');
-      const serverDark = {{ 'true' if theme_mode == 'dark' else 'false' }};
-      const dark = stored ? stored === 'dark' : serverDark;
-      if (dark) document.documentElement.classList.add('theme-dark');
-      document.documentElement.style.setProperty('--accent', '{{ accent_color }}');
-    })();
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"Organization","name":{{ site_name|tojson }},"url":{{ request.url_root.rstrip('/')|tojson }},"logo":{{ (request.url_root.rstrip('/') ~ logo_path)|tojson }}}
   </script>
 </head>
-<body class="{% if is_admin() and show_nav %}admin-mode{% elif show_nav %}user-mode{% else %}auth-mode{% endif %}">
-  <div class="{% if show_nav %}shell{% else %}auth-shell{% endif %}">
-    {% if show_nav %}
-      {% if is_admin() %}
-      <aside class="sidebar admin-sidebar">
-        <a class="brand admin-brand" href="/admin/dashboard">
-          <img src="{{ logo_path }}" alt="Logo">
-          <div>
-            <h1>{{ site_name }}</h1>
-            <p>Control Center</p>
-          </div>
-        </a>
-        <div class="sidebar-label">Admin workspace</div>
-        <nav class="nav admin-nav">
-          <a href="/admin/dashboard" class="{{ 'active' if request.path == '/admin/dashboard' else '' }}">◫ Dashboard</a>
-          <a href="/admin/users" class="{{ 'active' if '/admin/users' in request.path else '' }}">◉ Users</a>
-          <a href="/admin/projects" class="{{ 'active' if '/admin/projects' in request.path else '' }}">▣ Projects</a>
-          <a href="/admin/vault" class="{{ 'active' if '/admin/vault' in request.path else '' }}">⟐ Vault</a>
-          <a href="/admin/contacts" class="{{ 'active' if '/admin/contacts' in request.path else '' }}">✉ Contacts</a>
-          <a href="/admin/chat" class="{{ 'active' if '/admin/chat' in request.path else '' }}">☰ Messages</a>
-          <a href="/admin/settings" class="{{ 'active' if '/admin/settings' in request.path else '' }}">⚙ Settings</a>
-          <button type="button" data-theme-toggle>☼ Theme</button>
-          <a href="/admin/logout">⇢ Logout</a>
-        </nav>
-        <div class="footer-note">Company control panel for content, users, and settings.</div>
-      </aside>
-      {% else %}
-      <aside class="sidebar">
-        <a class="brand" href="/portal">
-          <img src="{{ logo_path }}" alt="Logo">
-          <div>
-            <h1>{{ site_name }}</h1>
-          </div>
-        </a>
-        <nav class="nav">
-          <a href="/portal" class="{{ 'active' if request.path == '/portal' else '' }}">⌂ Home</a>
-          <a href="/projects" class="{{ 'active' if '/projects' in request.path else '' }}">◫ Projects</a>
-          <a href="/chat" class="{{ 'active' if '/chat' in request.path else '' }}">✉ Chat</a>
-          <a href="/profile" class="{{ 'active' if '/profile' in request.path else '' }}">◉ Profile</a>
-          <button type="button" data-theme-toggle>☼ Theme</button>
-          <a href="/logout">⇢ Logout</a>
-        </nav>
-      </aside>
-      {% endif %}
-    {% endif %}
-
-    <main class="{% if show_nav %}main{% else %}auth-main{% endif %}">
-      <div class="{% if show_nav %}container{% else %}auth-container{% endif %}">
-        {% if show_nav %}
-        <div class="topbar {% if is_admin() %}topbar-admin{% endif %}">
-          <div class="topbar-left">
-            <span class="greeting">Hello, {{ display_name }}</span>
-            <span class="subtle">{% if is_admin() %}Administrator workspace{% else %}{{ site_name }}{% endif %}</span>
-          </div>
-          <div class="topbar-right">
-            <button type="button" class="btn small" data-theme-toggle>Theme</button>
-            <a class="btn small ghost" href="{% if is_admin() %}/admin/logout{% else %}/logout{% endif %}">Logout</a>
-          </div>
-        </div>
-        {% endif %}
-
-        {% with messages = get_flashed_messages(with_categories=true) %}
-          {% if messages %}
-            <div class="flash-wrap {{ 'auth-flashes' if not show_nav else '' }}">
-              {% for category, message in messages %}
-                <div class="flash {{ category }}">{{ message }}</div>
-              {% endfor %}
-            </div>
-          {% endif %}
-        {% endwith %}
-
-        {% block content %}{% endblock %}
+<body class="{% if is_admin() %}admin-mode{% else %}public-mode{% endif %}">
+{% if is_admin() %}
+  <div class="admin-shell">
+    <aside class="sidebar admin-sidebar" id="admin-sidebar">
+      <a class="brand admin-brand" href="/admin/dashboard"><img src="{{ logo_path }}" alt="{{ site_name }} logo"><div><strong>{{ site_name }}</strong><span>Private administration</span></div></a>
+      <div class="sidebar-label">Workspace</div>
+      <nav class="nav admin-nav" aria-label="Admin navigation">
+        <a href="/admin/dashboard" class="{{ 'active' if request.path == '/admin/dashboard' else '' }}">◈ Dashboard</a>
+        <a href="/admin/contacts" class="{{ 'active' if '/admin/contacts' in request.path else '' }}">✦ Enquiries & contacts</a>
+        <a href="/admin/certificates" class="{{ 'active' if '/admin/certificates' in request.path else '' }}">✧ Certificates</a>
+        <a href="/admin/projects" class="{{ 'active' if '/admin/projects' in request.path else '' }}">▦ Projects</a>
+        <a href="/admin/vault" class="{{ 'active' if '/admin/vault' in request.path else '' }}">◇ Vault</a>
+        <a href="/admin/chat" class="{{ 'active' if '/admin/chat' in request.path else '' }}">◎ Messages</a>
+        <a href="/admin/users" class="{{ 'active' if '/admin/users' in request.path else '' }}">○ Legacy users</a>
+        <a href="/admin/settings" class="{{ 'active' if request.path == '/admin/settings' else '' }}">⚙ Site settings</a>
+        <a href="/" target="_blank" rel="noreferrer">↗ View public site</a>
+        <a href="/admin/logout">⇥ Sign out</a>
+      </nav>
+      <p class="footer-note">Administration is protected by the private entry path and Render environment credentials.</p>
+    </aside>
+    <main class="admin-main">
+      <div class="admin-mobilebar"><button class="sidebar-toggle" type="button" data-admin-menu aria-label="Open administration menu">☰</button><div><strong>{{ site_name }}</strong><span>Admin</span></div></div>
+      <div class="container admin-container">
+        <div class="admin-topbar"><div><strong>Control centre</strong><span>{{ admin_name if admin_name else developer_name }}</span></div><div class="admin-top-actions"><a class="btn small" href="/" target="_blank">Public site</a><a class="btn small" href="/admin/logout">Sign out</a></div></div>
+{% else %}
+  <header class="site-header"><div class="site-header-inner">
+    <a class="site-brand" href="/" aria-label="{{ site_name }} home"><img src="{{ logo_path }}" alt="{{ site_name }} logo"><span><strong>{{ site_name }}</strong><small>{{ tagline }}</small></span></a>
+    <nav class="desktop-nav" aria-label="Primary navigation"><a href="/">Home</a><a href="/about">Who we are</a><a href="/services">Services</a><a href="/work">Our work</a><a href="/contact" class="nav-cta">Talk to us</a></nav>
+    <button class="sidebar-toggle public-menu-button" type="button" data-public-menu aria-label="Open menu" aria-expanded="false">☰</button>
+  </div></header>
+  <aside class="public-drawer" id="public-drawer" aria-label="Site menu" aria-hidden="true"><div class="drawer-head"><span>Explore {{ site_name }}</span><button class="drawer-close" type="button" data-public-close aria-label="Close menu">×</button></div><nav class="drawer-nav"><a href="/">Home <span>→</span></a><a href="/about">Who we are <span>→</span></a><a href="/services">Services <span>→</span></a><a href="/work">Our work <span>→</span></a><a href="/faq">FAQs <span>→</span></a><a href="/contact">Contact & enquiries <span>→</span></a><a href="/verify">Certificate verification <span>→</span></a><a href="/privacy">Privacy <span>→</span></a><a href="/terms">Terms <span>→</span></a></nav></aside>
+  <div class="drawer-scrim" data-public-close></div>
+  <main class="public-main">
+{% endif %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}<div class="flash-wrap public-flashes">{% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}</div>{% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+{% if is_admin() %}
       </div>
     </main>
   </div>
-
-  {% if show_nav and not is_admin() %}
-  <nav class="nav-mobile">
-    <div class="row">
-      <a href="/portal" class="{{ 'active' if request.path == '/portal' else '' }}">⌂<span>Home</span></a>
-      <a href="/projects" class="{{ 'active' if '/projects' in request.path else '' }}">◫<span>Work</span></a>
-      <a href="/chat" class="{{ 'active' if '/chat' in request.path else '' }}">✉<span>Chat</span></a>
-      <a href="/profile" class="{{ 'active' if '/profile' in request.path else '' }}">◉<span>Me</span></a>
-      <a href="/logout">⇢<span>Exit</span></a>
-    </div>
-  </nav>
-  {% elif show_nav and is_admin() %}
-  <nav class="nav-mobile admin-mobile">
-    <div class="row">
-      <a href="/admin/dashboard" class="{{ 'active' if request.path == '/admin/dashboard' else '' }}">◫<span>Dash</span></a>
-      <a href="/admin/users" class="{{ 'active' if '/admin/users' in request.path else '' }}">◉<span>Users</span></a>
-      <a href="/admin/projects" class="{{ 'active' if '/admin/projects' in request.path else '' }}">▣<span>Work</span></a>
-      <a href="/admin/vault" class="{{ 'active' if '/admin/vault' in request.path else '' }}">⟐<span>Vault</span></a>
-      <a href="/admin/chat" class="{{ 'active' if '/admin/chat' in request.path else '' }}">✉<span>Msgs</span></a>
-      <a href="/admin/logout">⇢<span>Exit</span></a>
-    </div>
-  </nav>
-  {% endif %}
-
-  <script>
-    window.__TOROR_USER_EMAIL = {{ (user_email or '')|tojson }};
-    window.__TOROR_IS_ADMIN = {{ 'true' if is_admin() else 'false' }};
-  </script>
-  <script src="/static/js/app.js"></script>
+{% else %}
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><div class="footer-brand"><img src="{{ logo_path }}" alt="{{ site_name }} logo"><div><strong>{{ site_name }}</strong><span>{{ footer_text }}</span></div></div><div class="footer-links"><a href="/about">About</a><a href="/services">Services</a><a href="/work">Work</a><a href="/contact">Contact</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></div><div class="footer-contact">{% if primary_email %}<a href="mailto:{{ primary_email }}">{{ primary_email }}</a>{% endif %}{% if primary_phone %}<a href="tel:{{ primary_phone }}">{{ primary_phone }}</a>{% endif %}{% if address_text %}<span>{{ address_text }}</span>{% endif %}</div></div><div class="copyright">© {{ current_year }} {{ site_name }}. All rights reserved.</div></footer>
+{% endif %}
+<script src="/static/js/app.js"></script>
 </body>
 </html>
