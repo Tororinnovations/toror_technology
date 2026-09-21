@@ -1,4 +1,10 @@
 (() => {
+  // Update/claim the current PWA service worker so public phones do not remain on an older cached UI.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js?v=6', { updateViaCache: 'none' }).catch(() => {});
+    });
+  }
   const publicDrawer = document.getElementById('public-drawer');
   const publicToggle = document.querySelector('[data-public-menu]');
   const publicClose = document.querySelectorAll('[data-public-close]');

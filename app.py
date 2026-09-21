@@ -78,12 +78,26 @@ def close_db(_exc):
         db.close()
 
 
+def _env_value(name, *fallbacks):
+    """Read a Render environment variable, tolerating accidental surrounding quotes."""
+    for key in (name, *fallbacks):
+        value = os.environ.get(key)
+        if value is None:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if value:
+            return value
+    return ''
+
+
 def get_admin_name():
-    return os.environ.get('ADMIN_NAME', '')
+    return _env_value('ADMIN_NAME', 'ADMIN_USERNAME')
 
 
 def get_admin_password():
-    return os.environ.get('ADMIN_PASSWORD', '')
+    return _env_value('ADMIN_PASSWORD', 'RENDER_ENV_PASSWORD')
 
 
 def query_one(sql, args=()):
@@ -235,6 +249,7 @@ def init_db():
         }
         for key, (legacy, updated) in legacy_to_new.items():
             db.execute('UPDATE settings SET value=? WHERE key=? AND value=?', (updated, key, legacy))
+        professionalize_existing_content(db)
         db.commit()
     finally:
         db.close()
@@ -261,6 +276,72 @@ def init_db():
         db.commit()
     finally:
         db.close()
+
+
+def professionalize_existing_content(db):
+    """Bring bundled/legacy content to the current Toror public-site identity.
+
+    Existing custom content is left alone unless it is one of the original placeholder
+    values shipped with the app.
+    """
+    settings = {
+        'site_name': 'Toror Technology Company Ltd',
+        'tagline': 'Technology that turns ideas into working products.',
+        'hero_kicker': 'Technology • Software • Digital Solutions',
+        'hero_text': 'We design, build, deploy, and support practical digital systems for organisations, businesses, and communities.',
+        'about_text': 'Toror Technology Company Ltd is a technology company focused on practical software, digital platforms, automation, and technology services that help organisations work better and serve people more effectively.',
+        'history_text': 'Our history is built around learning by doing: understanding real operational problems, turning them into clear digital products, and continuing to improve those products as the needs of our clients grow.',
+        'mission_text': 'To build useful, dependable technology that solves real problems and creates lasting value.',
+        'vision_text': 'To become a trusted technology partner for organisations that want to modernise, simplify, and grow.',
+        'service_text': 'Software development, web platforms, business systems, automation, deployment, and tailored digital solutions.',
+        'footer_text': 'Toror Technology Company Ltd — practical technology, thoughtfully built.',
+        'meta_description': 'Toror Technology Company Ltd builds practical software, digital platforms, automation, and technology solutions.',
+        'logo_path': '/static/default-logo.svg',
+        'theme_mode': 'light',
+        'accent_color': '#641521',
+        'login_enabled': '0',
+        'chat_enabled': '0',
+    }
+    # These values were placeholders/legacy values in the bundled database.
+    replacements = {
+        'site_name': {'Toror Technology and Innovations Ltd'},
+        'tagline': {'Toror Technology and Innovations Ltd'},
+        'hero_text': {'Register to continue.'},
+        'about_text': {'Toror Technology and Innovations Ltd is a technology company.'},
+        'logo_path': {'/static/default-logo.svg'},
+    }
+    for key, value in settings.items():
+        current = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        if not current:
+            db.execute('INSERT INTO settings(key,value) VALUES (?,?)', (key, value))
+        elif key in replacements and current[0] in replacements[key]:
+            db.execute('UPDATE settings SET value=? WHERE key=?', (value, key))
+    # Keep the public portfolio tightly focused on the current Toror products/sites.
+    curated = [
+        ('Oedge', 'Toror digital services and mobility platform.', 'https://oedge.onrender.com/', 'Active'),
+        ('Denmart', 'Denmart online business platform.', 'https://denmart.co.ke/', 'Active'),
+        ('O Travel', 'Toror travel and ticketing platform.', 'https://otravel-bleg.onrender.com/', 'Active'),
+        ('Prime School Platform', 'Digital school management platform by Toror Technology Company Ltd.', 'https://prime-1-rd0g.onrender.com/', 'Active'),
+    ]
+    legacy_links = {
+        'https://kerryconnect360.onrender.com/',
+        '1. https://e-agriculture.onrender.com',
+        'https://beacon-cloud.onrender.com/friendly',
+        'https://tomorrow-au2q.onrender.com/business.html',
+    }
+    rows = db.execute('SELECT id, link FROM projects ORDER BY id ASC').fetchall()
+    legacy_ids = [r[0] for r in rows if r[1] in legacy_links]
+    for idx, item in enumerate(curated):
+        if idx < len(legacy_ids):
+            db.execute('UPDATE projects SET title=?, summary=?, link=?, status=? WHERE id=?', (*item, legacy_ids[idx]))
+        else:
+            db.execute('INSERT INTO projects(title,summary,link,status,created_at) VALUES (?,?,?,?,?)', (*item, now_iso()))
+    # If the shipped database already has a different project set, ensure these four links
+    # are present without deleting additional admin-created work.
+    existing_links = {r[0] for r in db.execute('SELECT link FROM projects').fetchall()}
+    for item in curated:
+        if item[2] not in existing_links:
+            db.execute('INSERT INTO projects(title,summary,link,status,created_at) VALUES (?,?,?,?,?)', (*item, now_iso()))
 
 
 def get_setting(key, default=''):
@@ -639,14 +720,27 @@ def admin_entry():
     open_mode = False
     if request.method == 'POST':
         admin_name = request.form.get('admin_name', '').strip()
-        password = request.form.get('password', '').strip()
-        if admin_name == get_admin_name() and password == get_admin_password() and admin_name and password:
+        password = request.form.get('password', '')
+        configured_name = get_admin_name()
+        configured_password = get_admin_password()
+        name_ok = bool(admin_name and configured_name and hmac.compare_digest(admin_name.casefold(), configured_name.casefold()))
+        password_ok = False
+        if configured_password and password:
+            if configured_password.startswith(('scrypt:', 'pbkdf2:', 'argon2:')):
+                try:
+                    password_ok = check_password_hash(configured_password, password)
+                except ValueError:
+                    password_ok = False
+            else:
+                password_ok = hmac.compare_digest(password, configured_password)
+        if name_ok and password_ok:
             session.clear()
             session['admin_logged_in'] = True
-            session['user_email'] = os.environ.get('ADMIN_EMAIL', '')
+            session['user_email'] = _env_value('ADMIN_EMAIL')
+            session['admin_name'] = configured_name
             flash('Welcome to the private administration workspace.', 'success')
             return redirect(url_for('admin_dashboard'))
-        flash('Invalid administrator credentials.', 'error')
+        flash('Invalid administrator credentials. Check ADMIN_NAME and ADMIN_PASSWORD in Render.', 'error')
     return render_template('admin_login.html', open_mode=open_mode)
 
 
@@ -1186,6 +1280,33 @@ def verify_certificate(serial, sig_override=None):
     return render_template('verify.html', certificate=row, valid=valid, serial=serial.upper())
 
 
+@app.route('/qr/home.png')
+def home_qr():
+    if not REPORTING_AVAILABLE:
+        abort(503)
+    target = request.url_root.rstrip('/') + url_for('index')
+    qr = qrcode.QRCode(version=4, box_size=9, border=4)
+    qr.add_data(target)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color='#3E0B14', back_color='#F2FAFD').convert('RGB')
+    buf = BytesIO()
+    image.save(buf, format='PNG')
+    buf.seek(0)
+    response = app.response_class(buf.getvalue(), mimetype='image/png')
+    response.headers['Cache-Control'] = 'public, max-age=3600'
+    return response
+
+
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(BASE_DIR / 'static', 'default-logo.svg', mimetype='image/svg+xml')
+
+
+@app.route('/pulse_receiver', methods=['GET', 'POST'])
+def pulse_receiver():
+    return jsonify({'ok': True, 'service': 'toror'})
+
+
 @app.route('/api/version')
 def version():
     return jsonify({'site_name': get_setting('site_name'), 'public_mode': True, 'generated_at': now_iso()})
@@ -1207,7 +1328,10 @@ def sitemap():
 
 @app.route('/sw.js')
 def service_worker():
-    return send_from_directory(BASE_DIR / 'static' / 'js', 'sw.js', mimetype='application/javascript')
+    response = send_from_directory(BASE_DIR / 'static' / 'js', 'sw.js', mimetype='application/javascript')
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Service-Worker-Allowed'] = '/'
+    return response
 
 
 @app.route('/manifest.webmanifest')
@@ -1217,7 +1341,7 @@ def manifest():
         'short_name': 'Toror Tech',
         'start_url': '/',
         'display': 'standalone',
-        'background_color': '#79CBE8',
+        'background_color': '#F2FAFD',
         'theme_color': '#641521',
         'icons': [
             {'src': '/static/default-logo.svg', 'sizes': '192x192', 'type': 'image/svg+xml'}

@@ -1,6 +1,6 @@
 # Toror Technology Company Ltd — public corporate site + private administration
 
-The public website is intentionally open: visitors do not register, log in, or create an account. The public experience includes the company home page, who-we-are and history sections, services, selected work, FAQs, contact/enquiries, privacy, terms, and certificate verification.
+The public website is intentionally open: visitors do not register, log in, or create an account. The public experience includes the company home page, who-we-are and history sections, services, selected work, FAQs, contact/enquiries, privacy, terms, certificate verification, a homepage QR code, and mobile navigation. No visitor account is required.
 
 ## Private administration
 
@@ -39,4 +39,4 @@ Typical deployment variables:
 gunicorn app:app
 ```
 
-SQLite is used by default in `data/toror.db`. The existing database is retained and upgraded automatically for the new enquiry and certificate fields.
+SQLite is used by default in `data/toror.db`. The existing database is retained and upgraded automatically for the new enquiry and certificate fields. The bundled portfolio is set to Oedge, Denmart, O Travel, and Prime School Platform, and the public CSS/service-worker cache is versioned so mobile browsers receive the latest UI.
