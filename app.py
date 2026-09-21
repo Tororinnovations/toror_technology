@@ -32,9 +32,12 @@ from werkzeug.utils import secure_filename
 try:
     import qrcode
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.pagesizes import A4
     from reportlab.pdfbase.pdfmetrics import stringWidth
     from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
+    from reportlab.graphics import renderPDF
+    from svglib.svglib import svg2rlg
     REPORTING_AVAILABLE = True
 except ImportError:  # pragma: no cover - deployment dependency guard
     REPORTING_AVAILABLE = False
@@ -241,6 +244,8 @@ def init_db():
         'issuer_default_title': 'Chief Executive Officer',
         'issuer_signature_path': '',
         'certificate_base_url': '',
+        'certificate_default_title': 'Technology Partnership Recognition',
+        'certificate_default_note': 'In recognition of your decision to adopt our technology solution and begin a meaningful partnership with Toror Technology Company Ltd. We appreciate your trust and look forward to the value created through this collaboration.',
         'login_enabled': '0',
         'chat_enabled': '0',
     }
@@ -287,6 +292,7 @@ def init_db():
             'issuer_name': 'ALTER TABLE certificates ADD COLUMN issuer_name TEXT',
             'issuer_title': 'ALTER TABLE certificates ADD COLUMN issuer_title TEXT',
             'issuer_signature_path': 'ALTER TABLE certificates ADD COLUMN issuer_signature_path TEXT',
+            'certificate_logo_path': 'ALTER TABLE certificates ADD COLUMN certificate_logo_path TEXT',
         }.items():
             if name not in cert_cols:
                 db.execute(sql)
@@ -323,6 +329,8 @@ def professionalize_existing_content(db):
         'issuer_default_title': 'Chief Executive Officer',
         'issuer_signature_path': '',
         'certificate_base_url': '',
+        'certificate_default_title': 'Technology Partnership Recognition',
+        'certificate_default_note': 'In recognition of your decision to adopt our technology solution and begin a meaningful partnership with Toror Technology Company Ltd. We appreciate your trust and look forward to the value created through this collaboration.',
         'login_enabled': '0',
         'chat_enabled': '0',
     }
@@ -581,6 +589,8 @@ def inject_globals():
         'issuer_default_name': get_setting('issuer_default_name', get_admin_name()),
         'issuer_default_title': get_setting('issuer_default_title', 'Chief Executive Officer'),
         'issuer_signature_path': get_setting('issuer_signature_path', ''),
+        'certificate_default_title': get_setting('certificate_default_title', 'Technology Partnership Recognition'),
+        'certificate_default_note': get_setting('certificate_default_note', 'In recognition of your decision to adopt our technology solution and begin a meaningful partnership with Toror Technology Company Ltd. We appreciate your trust and look forward to the value created through this collaboration.'),
         'certificate_base_url': get_setting('certificate_base_url', ''),
         'is_admin': is_admin,
         'show_nav': True,
@@ -864,6 +874,8 @@ def admin_settings():
             'issuer_default_name': '',
             'issuer_default_title': 'Chief Executive Officer',
             'certificate_base_url': '',
+            'certificate_default_title': 'Technology Partnership Recognition',
+            'certificate_default_note': 'In recognition of your decision to adopt our technology solution and begin a meaningful partnership with Toror Technology Company Ltd. We appreciate your trust and look forward to the value created through this collaboration.',
             'tagline': '',
             'primary_email': '',
             'primary_phone': '',
@@ -1415,97 +1427,278 @@ def _draw_wrapped_centered(c, text, font_name, font_size, center_x, y, max_width
     return y
 
 
+def _local_logo_path(logo_path=None):
+    """Resolve a stored /static/... logo URL to a local file for ReportLab."""
+    candidate = (logo_path or public_logo() or '').strip()
+    if candidate.startswith('/'):
+        candidate = candidate[1:]
+    path = (BASE_DIR / candidate).resolve()
+    try:
+        path.relative_to(BASE_DIR.resolve())
+    except ValueError:
+        return None
+    return path if path.exists() and path.is_file() else None
+
+
+def _draw_logo(c, logo_path, center_x, center_y, max_w, max_h):
+    """Draw the current company logo, supporting raster files and SVG uploads."""
+    path = _local_logo_path(logo_path)
+    if not path:
+        return False
+    try:
+        ext = path.suffix.lower()
+        if ext == '.svg':
+            drawing = svg2rlg(str(path))
+            if not drawing or not drawing.width or not drawing.height:
+                return False
+            scale = min(max_w / float(drawing.width), max_h / float(drawing.height))
+            drawing.width *= scale
+            drawing.height *= scale
+            drawing.scale(scale, scale)
+            renderPDF.draw(drawing, c, center_x - drawing.width / 2, center_y - drawing.height / 2)
+            return True
+        c.drawImage(
+            ImageReader(str(path)),
+            center_x - max_w / 2,
+            center_y - max_h / 2,
+            max_w,
+            max_h,
+            preserveAspectRatio=True,
+            anchor='c',
+            mask='auto',
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _draw_certificate_corner(c, x, y, size, maroon, gold, sky_dark):
+    c.saveState()
+    c.setStrokeColor(maroon)
+    c.setLineWidth(1.7)
+    c.line(x, y, x + size, y)
+    c.line(x, y, x, y + size)
+    c.setStrokeColor(gold)
+    c.setLineWidth(0.8)
+    c.line(x + 7, y + 7, x + size - 7, y + 7)
+    c.line(x + 7, y + 7, x + 7, y + size - 7)
+    c.setStrokeColor(sky_dark)
+    c.setLineWidth(0.55)
+    c.line(x + 17, y + 17, x + size - 17, y + 17)
+    c.line(x + 17, y + 17, x + 17, y + size - 17)
+    c.restoreState()
+
+
 def draw_certificate(c, row, verification_url):
-    width, height = landscape(A4)
+    # A tall, print-friendly portrait certificate - visually closer to a premium
+    # mobile/portrait card while remaining standard A4 for normal printing.
+    width, height = A4
     maroon = colors.HexColor('#7B2431')
     dark_maroon = colors.HexColor('#5A111D')
     sky = colors.HexColor('#A9DBEA')
     sky_dark = colors.HexColor('#4E94A8')
     gold = colors.HexColor('#C9A65A')
     ink = colors.HexColor('#151517')
-    paper = colors.HexColor('#F4FBFE')
+    muted = colors.HexColor('#5D6B70')
+    paper = colors.HexColor('#F8FBFC')
     white = colors.white
 
-    c.setFillColor(paper); c.rect(0, 0, width, height, fill=1, stroke=0)
-    c.setFillColor(maroon); c.rect(0, 0, width, 20, fill=1, stroke=0); c.rect(0, height-20, width, 20, fill=1, stroke=0)
+    c.setTitle(f"{row.get('award_title') or 'Certificate'} - {row.get('recipient_name') or 'Recipient'}")
+    c.setFillColor(paper)
+    c.rect(0, 0, width, height, fill=1, stroke=0)
 
-    # Distinctive layered certificate frame.
-    for inset, stroke, sw in [(27, maroon, 3.2), (36, gold, 1.3), (45, sky_dark, 0.9)]:
-        c.setStrokeColor(stroke); c.setLineWidth(sw); c.roundRect(inset, inset, width-2*inset, height-2*inset, 10, fill=0, stroke=1)
+    # Elegant top and bottom colour bands.
+    c.setFillColor(dark_maroon)
+    c.rect(0, height - 13, width, 13, fill=1, stroke=0)
+    c.setFillColor(maroon)
+    c.rect(0, 0, width, 7, fill=1, stroke=0)
 
-    # Fine security geometry kept away from the content area.
-    c.saveState()
-    c.setStrokeColor(colors.Color(sky.red, sky.green, sky.blue, alpha=0.35)); c.setLineWidth(0.45)
-    for x in range(70, int(width)-70, 22):
-        c.line(x, 55, x+38, height-55); c.line(x, height-55, x+38, 55)
-    c.restoreState()
+    # Main portrait plaque with generous whitespace.
+    plaque_x, plaque_y = 35, 31
+    plaque_w, plaque_h = width - 70, height - 62
+    c.setFillColor(white)
+    c.setStrokeColor(colors.HexColor('#D8C9A5'))
+    c.setLineWidth(0.9)
+    c.roundRect(plaque_x, plaque_y, plaque_w, plaque_h, 21, fill=1, stroke=1)
+    c.setStrokeColor(colors.HexColor('#7D9EA8'))
+    c.setLineWidth(0.5)
+    c.roundRect(plaque_x + 10, plaque_y + 10, plaque_w - 20, plaque_h - 20, 16, fill=0, stroke=1)
 
-    # Central Toror medallion.
-    cx, cy = width/2, height*0.68
-    c.setFillColor(sky); c.circle(cx, cy, 40, fill=1, stroke=0)
-    c.setStrokeColor(maroon); c.setLineWidth(3.5); c.circle(cx, cy, 45, fill=0, stroke=1)
-    c.setStrokeColor(gold); c.setLineWidth(1.3); c.circle(cx, cy, 50, fill=0, stroke=1)
-    c.setFillColor(dark_maroon); c.setFont('Helvetica-Bold', 25); c.drawCentredString(cx, cy-9, 'T')
+    _draw_certificate_corner(c, plaque_x + 18, plaque_y + plaque_h - 66, 38, maroon, gold, sky_dark)
+    _draw_certificate_corner(c, plaque_x + plaque_w - 56, plaque_y + plaque_h - 66, 38, maroon, gold, sky_dark)
+    _draw_certificate_corner(c, plaque_x + 18, plaque_y + 28, 38, maroon, gold, sky_dark)
+    _draw_certificate_corner(c, plaque_x + plaque_w - 56, plaque_y + 28, 38, maroon, gold, sky_dark)
 
-    # Header.
-    c.setFillColor(maroon); c.setFont('Helvetica-Bold', 12); c.drawCentredString(cx, height-58, 'TOROR TECHNOLOGY COMPANY LTD')
-    c.setFillColor(ink); c.setFont('Helvetica-Bold', 24); c.drawCentredString(cx, height-96, 'CERTIFICATE OF TECHNOLOGY PARTNERSHIP')
-    c.setFillColor(sky_dark); c.setFont('Helvetica', 9.5); c.drawCentredString(cx, height-115, 'Digitally issued recognition with independent online verification')
+    cx = width / 2
 
-    # Recipient body, with a deliberate exclusion zone around the QR panel below.
-    body_y = height*0.505
-    c.setFillColor(ink); c.setFont('Helvetica', 10.5); c.drawCentredString(cx, body_y, 'This certificate is proudly presented to')
-    c.setFillColor(dark_maroon); c.setFont('Helvetica-Bold', 26); c.drawCentredString(cx, body_y-36, row['recipient_name'])
-    c.setFillColor(ink); c.setFont('Helvetica', 10.5); c.drawCentredString(cx, body_y-59, f"of {row['business_name']}")
-    _draw_wrapped_centered(c, f"for acquiring and adopting {row['software_name']} from Toror Technology Company Ltd.", 'Helvetica', 10.5, cx, body_y-86, 650, color=ink)
-    c.setFillColor(maroon); c.setFont('Helvetica-Bold', 12.5); c.drawCentredString(cx, body_y-113, row['award_title'])
-    note = row.get('notes') or ''
+    # Company mark: the uploaded official logo, never a hard-coded letter.
+    logo_box_y = height - 122
+    c.setFillColor(colors.HexColor('#EFF7FA'))
+    c.circle(cx, logo_box_y, 44, fill=1, stroke=0)
+    c.setStrokeColor(gold)
+    c.setLineWidth(1.1)
+    c.circle(cx, logo_box_y, 47, fill=0, stroke=1)
+    if not _draw_logo(c, row.get('certificate_logo_path') or public_logo(), cx, logo_box_y, 67, 67):
+        # Last-resort textual fallback only when an actual image cannot be read.
+        c.setFillColor(dark_maroon)
+        c.setFont('Helvetica-Bold', 17)
+        c.drawCentredString(cx, logo_box_y - 6, 'TOROR')
+
+    company = (get_setting('site_name', 'Toror Technology Company Ltd') or 'Toror Technology Company Ltd').strip()
+    c.setFillColor(dark_maroon)
+    c.setFont('Helvetica-Bold', 10.5)
+    c.drawCentredString(cx, height - 177, company.upper()[:70])
+    c.setFillColor(sky_dark)
+    c.setFont('Helvetica', 7.3)
+    c.drawCentredString(cx, height - 192, 'OFFICIAL TECHNOLOGY PARTNERSHIP RECOGNITION')
+
+    c.setFillColor(ink)
+    c.setFont('Helvetica-Bold', 22)
+    heading_y = _draw_wrapped_centered(c, 'CERTIFICATE OF TECHNOLOGY PARTNERSHIP', 'Helvetica-Bold', 22, cx, height - 232, 455, leading=26, color=ink)
+    c.setStrokeColor(gold)
+    c.setLineWidth(1.25)
+    c.line(cx - 92, heading_y - 3, cx + 92, heading_y - 3)
+    c.setFillColor(muted)
+    c.setFont('Helvetica', 8.7)
+    c.drawCentredString(cx, heading_y - 22, 'Presented with appreciation for trust, adoption and collaboration')
+
+    # Recipient block.
+    body_top = height - 335
+    c.setFillColor(muted)
+    c.setFont('Helvetica', 9.6)
+    c.drawCentredString(cx, body_top, 'THIS CERTIFICATE IS PROUDLY PRESENTED TO')
+    c.setFillColor(dark_maroon)
+    c.setFont('Helvetica-Bold', 27)
+    recipient = str(row.get('recipient_name') or 'John Doe')[:44]
+    c.drawCentredString(cx, body_top - 39, recipient)
+
+    business = str(row.get('business_name') or 'Example Organisation')
+    c.setFillColor(ink)
+    c.setFont('Helvetica', 10)
+    c.drawCentredString(cx, body_top - 62, f'of {business[:66]}')
+
+    software = str(row.get('software_name') or 'Toror Technology Platform')
+    text_y = _draw_wrapped_centered(
+        c,
+        f'For choosing and adopting {software} as part of a practical technology partnership with {company}.',
+        'Helvetica',
+        9.8,
+        cx,
+        body_top - 92,
+        360,
+        leading=14,
+        color=ink,
+    )
+
+    award_title = str(row.get('award_title') or 'Technology Partnership Recognition')[:70]
+    c.setFillColor(maroon)
+    c.setFont('Helvetica-Bold', 11.8)
+    c.drawCentredString(cx, text_y - 6, award_title)
+
+    note = (row.get('notes') or '').strip()
     if note:
-        _draw_wrapped_centered(c, note, 'Helvetica', 8.5, cx, body_y-136, 560, leading=10, color=ink)
+        _draw_wrapped_centered(c, note, 'Helvetica', 8.25, cx, text_y - 29, 350, leading=11.2, color=muted)
 
-    # Issuer/signature zone: fully separate from QR zone.
-    left_x = 125
-    sig_y = 73
-    c.setStrokeColor(ink); c.setLineWidth(0.75); c.line(55, sig_y, 205, sig_y)
+    # Lower trust line and metadata, grouped tightly so the portrait layout feels intentional.
+    c.setStrokeColor(colors.HexColor('#DFE9EC'))
+    c.setLineWidth(0.7)
+    c.line(plaque_x + 44, 255, plaque_x + plaque_w - 44, 255)
+    c.setFillColor(sky_dark)
+    c.setFont('Helvetica-Bold', 7.1)
+    c.drawString(plaque_x + 52, 238, 'CERTIFICATE NUMBER')
+    c.setFillColor(ink)
+    c.setFont('Helvetica-Bold', 7.2)
+    c.drawString(plaque_x + 52, 225, str(row.get('serial') or '')[:34])
+    c.setFillColor(muted)
+    c.setFont('Helvetica', 6.7)
+    c.drawString(plaque_x + 52, 213, 'Digitally recorded and independently verifiable')
+    c.setFillColor(sky_dark)
+    c.setFont('Helvetica-Bold', 7.1)
+    c.drawString(plaque_x + 300, 238, 'ISSUE DATE')
+    c.setFillColor(ink)
+    c.setFont('Helvetica-Bold', 7.2)
+    c.drawString(plaque_x + 300, 225, str(row.get('award_date') or '')[:30])
+
+    # Issuer/signatory zone remains visually separate from the verification area.
+    sig_y = 157
+    sig_left = plaque_x + 50
+    sig_right = plaque_x + 225
+    c.setStrokeColor(ink)
+    c.setLineWidth(0.7)
+    c.line(sig_left, sig_y, sig_right, sig_y)
     sig_path = signature_file_path(row.get('issuer_signature_path'))
-    from reportlab.lib.utils import ImageReader
     if sig_path and sig_path.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'}:
         try:
-            c.drawImage(ImageReader(str(sig_path)), 63, sig_y+4, 134, 42, preserveAspectRatio=True, anchor='c', mask='auto')
+            c.drawImage(ImageReader(str(sig_path)), sig_left + 6, sig_y + 4, 150, 43, preserveAspectRatio=True, anchor='c', mask='auto')
         except Exception:
             pass
     else:
-        signature_name = row.get('issuer_name') or row.get('awarded_by') or 'Authorised Signatory'
-        c.setFillColor(dark_maroon); c.setFont('Helvetica-Oblique', 18); c.drawCentredString(130, sig_y+14, signature_name[:28])
-        c.setStrokeColor(dark_maroon); c.setLineWidth(1.1); c.bezier(72, sig_y+9, 108, sig_y-2, 151, sig_y+11, 194, sig_y+1)
-    c.setFillColor(ink); c.setFont('Helvetica-Bold', 8.5); c.drawString(55, 59, (row.get('issuer_name') or row.get('awarded_by') or 'Authorised Signatory')[:38])
-    c.setFillColor(sky_dark); c.setFont('Helvetica', 7.5); c.drawString(55, 47, (row.get('issuer_title') or 'Authorised Signatory')[:38])
-    c.setFont('Helvetica', 6.8); c.drawString(55, 36, 'Electronic signature / authorised issuer')
+        signature_name = str(row.get('issuer_name') or row.get('awarded_by') or 'Authorised Signatory')[:28]
+        c.setFillColor(dark_maroon)
+        c.setFont('Helvetica-Oblique', 14)
+        c.drawCentredString((sig_left + sig_right) / 2, sig_y + 17, signature_name)
+    c.setFillColor(ink)
+    c.setFont('Helvetica-Bold', 7.9)
+    c.drawCentredString((sig_left + sig_right) / 2, 141, str(row.get('issuer_name') or row.get('awarded_by') or 'Authorised Signatory')[:34])
+    c.setFillColor(sky_dark)
+    c.setFont('Helvetica', 6.9)
+    c.drawCentredString((sig_left + sig_right) / 2, 130, str(row.get('issuer_title') or 'Authorised Signatory')[:34])
 
-    # Date zone.
-    c.setStrokeColor(ink); c.setLineWidth(0.75); c.line(250, sig_y, 380, sig_y)
-    c.setFillColor(ink); c.setFont('Helvetica-Bold', 9); c.drawCentredString(315, 58, row['award_date'])
-    c.setFillColor(sky_dark); c.setFont('Helvetica', 7.5); c.drawCentredString(315, 46, 'Award date')
+    date_left = plaque_x + 263
+    date_right = plaque_x + 385
+    c.setStrokeColor(ink)
+    c.line(date_left, sig_y, date_right, sig_y)
+    date_center = (date_left + date_right) / 2
+    c.setFillColor(ink)
+    award_end = _draw_wrapped_centered(
+        c,
+        str(row.get('award_title') or 'Technology Partnership Recognition'),
+        'Helvetica-Bold',
+        7.4,
+        date_center,
+        141,
+        118,
+        leading=8.4,
+        color=ink,
+    )
+    c.setFillColor(sky_dark)
+    c.setFont('Helvetica', 6.9)
+    c.drawCentredString(date_center, award_end - 2, 'AWARD TITLE')
 
-    # Dedicated QR authenticity panel; no body/signature text enters this reserved rectangle.
-    panel_x, panel_y, panel_w, panel_h = width-247, 38, 202, 103
-    c.setFillColor(colors.Color(sky.red, sky.green, sky.blue, alpha=0.12)); c.roundRect(panel_x, panel_y, panel_w, panel_h, 9, fill=1, stroke=0)
-    c.setStrokeColor(sky_dark); c.setLineWidth(0.8); c.roundRect(panel_x, panel_y, panel_w, panel_h, 9, fill=0, stroke=1)
-    qr = qrcode.QRCode(version=4, box_size=3, border=2); qr.add_data(verification_url); qr.make(fit=True)
-    img = qr.make_image(fill_color='#5A111D', back_color='#F4FBFE').convert('RGB')
-    buf = BytesIO(); img.save(buf, format='PNG'); buf.seek(0)
-    c.drawImage(ImageReader(buf), panel_x+8, panel_y+12, 78, 78, preserveAspectRatio=True, mask='auto')
-    detail_x = panel_x + 96
-    c.setFillColor(dark_maroon); c.setFont('Helvetica-Bold', 6.8); c.drawString(detail_x, panel_y+78, 'SCAN TO VERIFY')
-    c.setFillColor(ink); c.setFont('Helvetica-Bold', 6.0); c.drawString(detail_x, panel_y+63, row['serial'])
-    c.setFillColor(sky_dark); c.setFont('Helvetica-Bold', 5.7); c.drawString(detail_x, panel_y+48, 'AUTHENTICITY CODE')
+    # QR verification panel, intentionally compact and integrated into the portrait layout.
+    panel_x, panel_y, panel_w, panel_h = plaque_x + 50, 49, plaque_w - 100, 67
+    c.setFillColor(colors.HexColor('#F3F8F9'))
+    c.setStrokeColor(colors.HexColor('#C8DCE1'))
+    c.setLineWidth(0.65)
+    c.roundRect(panel_x, panel_y, panel_w, panel_h, 12, fill=1, stroke=1)
+    qr = qrcode.QRCode(version=4, box_size=3, border=2)
+    qr.add_data(verification_url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color='#5A111D', back_color='#FFFFFF').convert('RGB')
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    c.drawImage(ImageReader(buf), panel_x + 7, panel_y + 7, 53, 53, preserveAspectRatio=True, mask='auto')
+    detail_x = panel_x + 70
+    c.setFillColor(dark_maroon)
+    c.setFont('Helvetica-Bold', 7.0)
+    c.drawString(detail_x, panel_y + 47, 'VERIFY AUTHENTICITY')
+    c.setFillColor(ink)
+    c.setFont('Helvetica-Bold', 6.0)
+    c.drawString(detail_x, panel_y + 35, str(row.get('serial') or '')[:32])
     auth = str(row.get('verification_sig') or '')
-    c.setFillColor(ink); c.setFont('Helvetica', 5.0)
-    c.drawString(detail_x, panel_y+36, auth[:22])
-    c.drawString(detail_x, panel_y+26, auth[22:44])
-    c.setFillColor(sky_dark); c.setFont('Helvetica', 5.5); c.drawString(detail_x, panel_y+12, 'ONLINE RECORD')
-    c.showPage(); c.save()
+    c.setFont('Helvetica', 5.1)
+    c.drawString(detail_x, panel_y + 25, auth[:28])
+    c.drawString(detail_x, panel_y + 16, auth[28:56])
+    c.setFillColor(sky_dark)
+    c.setFont('Helvetica', 5.5)
+    c.drawString(detail_x, panel_y + 6, 'SCAN TO OPEN THE OFFICIAL ONLINE RECORD')
 
+    c.setFillColor(muted)
+    c.setFont('Helvetica', 5.8)
+    c.drawCentredString(cx, 25, 'This certificate is issued as part of the official recognition records of the organisation.')
+    c.showPage()
+    c.save()
 
 def create_certificate_pdf(row):
     if not REPORTING_AVAILABLE:
@@ -1513,7 +1706,7 @@ def create_certificate_pdf(row):
     folder = UPLOAD_DIR / 'certificates'; folder.mkdir(parents=True, exist_ok=True)
     filename = f"{row['serial']}.pdf"; path = folder / filename
     verify_url = certificate_verification_url(row['serial'], row['verification_sig'])
-    c = canvas.Canvas(str(path), pagesize=landscape(A4)); draw_certificate(c, row, verify_url)
+    c = canvas.Canvas(str(path), pagesize=A4); draw_certificate(c, row, verify_url)
     return str(path.relative_to(BASE_DIR))
 
 
@@ -1524,11 +1717,11 @@ def admin_certificates():
         recipient = request.form.get('recipient_name','').strip()
         business = request.form.get('business_name','').strip()
         software = request.form.get('software_name','').strip()
-        award_title = request.form.get('award_title','').strip() or 'Technology Partnership Recognition'
+        award_title = request.form.get('award_title','').strip() or get_setting('certificate_default_title', 'Technology Partnership Recognition')
         issuer_name = request.form.get('issuer_name','').strip() or get_setting('issuer_default_name', get_admin_name())
         issuer_title = request.form.get('issuer_title','').strip() or get_setting('issuer_default_title', 'Chief Executive Officer')
         award_date = request.form.get('award_date','').strip() or datetime.now().strftime('%d %B %Y')
-        notes = request.form.get('notes','').strip()
+        notes = request.form.get('notes','').strip() or get_setting('certificate_default_note', 'In recognition of your decision to adopt our technology solution and begin a meaningful partnership with Toror Technology Company Ltd. We appreciate your trust and look forward to the value created through this collaboration.')
         issuer_signature_path = get_setting('issuer_signature_path', '')
         if not recipient or not business or not software or not issuer_name or not issuer_title:
             flash('Recipient, business, software, issuer name, and issuer title are required.', 'error')
@@ -1548,6 +1741,7 @@ def admin_certificates():
             'award_date': award_date,
             'notes': notes,
             'issuer_signature_path': issuer_signature_path,
+            'certificate_logo_path': public_logo(),
         }
         sig = certificate_signature(certificate_payload(row))
         row['verification_sig'] = sig
@@ -1557,9 +1751,9 @@ def admin_certificates():
             flash(str(exc), 'error')
             return redirect(url_for('admin_certificates'))
         execute('''INSERT INTO certificates
-            (serial,verification_sig,recipient_name,business_name,software_name,award_title,awarded_by,issuer_name,issuer_title,issuer_signature_path,award_date,notes,pdf_filename,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (serial,sig,recipient,business,software,award_title,issuer_name,issuer_name,issuer_title,issuer_signature_path,award_date,notes,rel,now_iso()))
+            (serial,verification_sig,recipient_name,business_name,software_name,award_title,awarded_by,issuer_name,issuer_title,issuer_signature_path,certificate_logo_path,award_date,notes,pdf_filename,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (serial,sig,recipient,business,software,award_title,issuer_name,issuer_name,issuer_title,issuer_signature_path,row['certificate_logo_path'],award_date,notes,rel,now_iso()))
         flash(f'Certificate {serial} created.', 'success')
         return redirect(url_for('admin_certificates'))
     certificates = query_all('SELECT * FROM certificates ORDER BY id DESC')
@@ -1569,6 +1763,8 @@ def admin_certificates():
         issuer_default_name=get_setting('issuer_default_name', get_admin_name()),
         issuer_default_title=get_setting('issuer_default_title', 'Chief Executive Officer'),
         issuer_signature_path=get_setting('issuer_signature_path', ''),
+        certificate_default_title=get_setting('certificate_default_title', 'Technology Partnership Recognition'),
+        certificate_default_note=get_setting('certificate_default_note', 'In recognition of your decision to adopt our technology solution and begin a meaningful partnership with Toror Technology Company Ltd. We appreciate your trust and look forward to the value created through this collaboration.'),
         certificate_base_url=certificate_base_url(),
     )
 
@@ -1583,11 +1779,12 @@ def admin_certificate_download(certificate_id):
     row['issuer_name'] = row.get('issuer_name') or row.get('awarded_by') or get_setting('issuer_default_name', get_admin_name())
     row['issuer_title'] = row.get('issuer_title') or get_setting('issuer_default_title', 'Chief Executive Officer')
     row['issuer_signature_path'] = row.get('issuer_signature_path') or ''
-    path = BASE_DIR / row['pdf_filename'] if row['pdf_filename'] else None
-    if not path or not path.exists():
-        rel = create_certificate_pdf(dict(row))
-        execute('UPDATE certificates SET pdf_filename=? WHERE id=?', (rel,certificate_id))
-        path = BASE_DIR / rel
+    row['certificate_logo_path'] = row.get('certificate_logo_path') or public_logo()
+    # Re-render on download so the improved portrait design is applied to older
+    # records too, while preserving their stored recipient/issuer/signature data.
+    rel = create_certificate_pdf(dict(row))
+    execute('UPDATE certificates SET pdf_filename=? WHERE id=?', (rel,certificate_id))
+    path = BASE_DIR / rel
     return send_from_directory(str(path.parent), path.name, as_attachment=True, download_name=path.name)
 
 
