@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#641521">
+  <meta name="theme-color" content="#7B2431">
   <meta name="description" content="{{ meta_description }}">
   <meta name="robots" content="index,follow">
   <link rel="icon" href="{{ logo_path }}">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/static/css/style.css?v=6">
+  <link rel="stylesheet" href="/static/css/style.css?v=8">
   <title>{{ title or site_name }}</title>
   <script type="application/ld+json">
   {"@context":"https://schema.org","@type":"Organization","name":{{ site_name|tojson }},"url":{{ request.url_root.rstrip('/')|tojson }},"logo":{{ (request.url_root.rstrip('/') ~ logo_path)|tojson }}}
   </script>
 </head>
-<body class="{% if is_admin() %}admin-mode{% else %}public-mode{% endif %}">
-{% if is_admin() %}
+<body class="{% if is_admin() and request.path.startswith('/admin') %}admin-mode{% else %}public-mode{% endif %}">
+{% if is_admin() and request.path.startswith('/admin') %}
   <div class="admin-shell">
     <aside class="sidebar admin-sidebar" id="admin-sidebar">
       <a class="brand admin-brand" href="/admin/dashboard"><img src="{{ logo_path }}" alt="{{ site_name }} logo"><div><strong>{{ site_name }}</strong><span>Private administration</span></div></a>
@@ -52,7 +52,7 @@
       {% if messages %}<div class="flash-wrap public-flashes">{% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}</div>{% endif %}
     {% endwith %}
     {% block content %}{% endblock %}
-{% if is_admin() %}
+{% if is_admin() and request.path.startswith('/admin') %}
       </div>
     </main>
   </div>
@@ -60,6 +60,6 @@
   </main>
   <footer class="site-footer"><div class="footer-inner"><div class="footer-brand"><img src="{{ logo_path }}" alt="{{ site_name }} logo"><div><strong>{{ site_name }}</strong><span>{{ footer_text }}</span></div></div><div class="footer-links"><a href="/about">About</a><a href="/services">Services</a><a href="/work">Work</a><a href="/contact">Contact</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></div><div class="footer-contact">{% if primary_email %}<a href="mailto:{{ primary_email }}">{{ primary_email }}</a>{% endif %}{% if primary_phone %}<a href="tel:{{ primary_phone }}">{{ primary_phone }}</a>{% endif %}{% if address_text %}<span>{{ address_text }}</span>{% endif %}</div><div class="footer-qr"><img src="/qr/home.png" alt="QR code to open {{ site_name }} homepage"><span>Scan to visit our homepage</span></div></div><div class="copyright">© {{ current_year }} {{ site_name }}. All rights reserved.</div></footer>
 {% endif %}
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=8"></script>
 </body>
 </html>
