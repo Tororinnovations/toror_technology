@@ -50,14 +50,11 @@ Admin → Site settings contains:
 
 For sensitive records, keep exported backups outside the Render service as well. The local database alone does not contain uploaded files, so the full-backup ZIP is the appropriate complete system backup.
 
-## Public project links
+## Public projects and Apps & Sites Store
 
-The portfolio is curated around:
+The public portfolio no longer contains hard-coded Toror website links. Add websites through **Admin → Apps & Sites Store** so each uploaded site can have its own name, preview/summary, description, price, payment switch, premium switch, release history and access instructions.
 
-- `https://oedge.onrender.com/`
-- `https://denmart.co.ke/`
-- `https://otravel-bleg.onrender.com/`
-- `https://prime-1-rd0g.onrender.com/`
+The home page and store show a compact product preview/summary; the full website opens only through its product access flow.
 
 ## Environment
 

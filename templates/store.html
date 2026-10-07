@@ -9,7 +9,7 @@
     <article class="store-card {% if product.premium_enabled %}premium-card{% endif %}">
       <div class="store-card-icon">{% if product.icon_path %}<img src="{{ product.icon_path }}" alt="">{% else %}<span>{{ 'A' if product.kind == 'apk' else 'W' }}</span>{% endif %}</div>
       <div class="store-card-body"><div class="store-card-tags"><span class="badge">{{ product.kind|title }}</span>{% if product.premium_enabled %}<span class="badge premium-badge">Premium</span>{% endif %}</div><h3>{{ product.name }}</h3><p>{{ product.short_description or product.description }}</p></div>
-      <div class="store-card-footer"><strong>{% if product.payment_required and product.price_kes > 0 %}{{ 'KES %.2f'|format(product.price_kes) }}{% else %}Free{% endif %}</strong><a class="btn primary" href="/store/product/{{ product.slug }}">View details</a></div>
+      <div class="store-card-footer"><strong>{% if product.payment_required and product.price_kes > 0 %}{{ 'KES %.2f'|format(product.price_kes) }}{% else %}Free{% endif %}</strong>{% if product.payment_required and product.price_kes > 0 %}<a class="btn primary" href="/store/product/{{ product.slug }}">View details</a>{% else %}<form method="post" action="/store/free/{{ product.id }}"><button class="btn primary" type="submit">{% if product.kind == 'apk' %}Download now{% else %}Open now{% endif %}</button></form>{% endif %}</div>
     </article>
     {% else %}<article class="store-empty"><span class="section-kicker">Coming soon</span><h3>No digital products are published yet.</h3><p>New Toror apps and uploaded websites will appear here automatically when the administrator publishes them.</p></article>{% endfor %}
   </div>

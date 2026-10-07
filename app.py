@@ -479,32 +479,22 @@ def professionalize_existing_content(db):
             db.execute('INSERT INTO settings(key,value) VALUES (?,?)', (key, value))
         elif key in replacements and current[0] in replacements[key]:
             db.execute('UPDATE settings SET value=? WHERE key=?', (value, key))
-    # Keep the public portfolio tightly focused on the current Toror products/sites.
-    curated = [
-        ('Oedge', 'Toror digital services and mobility platform.', 'https://oedge.onrender.com/', 'Active'),
-        ('Denmart', 'Denmart online business platform.', 'https://denmart.co.ke/', 'Active'),
-        ('O Travel', 'Toror travel and ticketing platform.', 'https://otravel-bleg.onrender.com/', 'Active'),
-        ('Prime School Platform', 'Digital school management platform by Toror Technology Company Ltd.', 'https://prime-1-rd0g.onrender.com/', 'Active'),
-    ]
-    legacy_links = {
-        'https://kerryconnect360.onrender.com/',
-        '1. https://e-agriculture.onrender.com',
-        'https://beacon-cloud.onrender.com/friendly',
-        'https://tomorrow-au2q.onrender.com/business.html',
+    # These four legacy website entries are no longer part of the public portfolio.
+    # They now belong in Apps & Sites Store as website products, where the administrator
+    # controls the upload, preview/summary, payment, premium status and access rules.
+    legacy_store_site_links = {
+        'https://oedge.onrender.com/',
+        'https://denmart.co.ke/',
+        'https://otravel-bleg.onrender.com/',
+        'https://prime-1-rd0g.onrender.com/',
     }
-    rows = db.execute('SELECT id, link FROM projects ORDER BY id ASC').fetchall()
-    legacy_ids = [r[0] for r in rows if r[1] in legacy_links]
-    for idx, item in enumerate(curated):
-        if idx < len(legacy_ids):
-            db.execute('UPDATE projects SET title=?, summary=?, link=?, status=? WHERE id=?', (*item, legacy_ids[idx]))
-        else:
-            db.execute('INSERT INTO projects(title,summary,link,status,created_at) VALUES (?,?,?,?,?)', (*item, now_iso()))
-    # If the shipped database already has a different project set, ensure these four links
-    # are present without deleting additional admin-created work.
-    existing_links = {r[0] for r in db.execute('SELECT link FROM projects').fetchall()}
-    for item in curated:
-        if item[2] not in existing_links:
-            db.execute('INSERT INTO projects(title,summary,link,status,created_at) VALUES (?,?,?,?,?)', (*item, now_iso()))
+    legacy_rows = db.execute(
+        'SELECT id FROM projects WHERE link IN (%s)' % ','.join('?' for _ in legacy_store_site_links),
+        tuple(legacy_store_site_links),
+    ).fetchall()
+    for row in legacy_rows:
+        db.execute('DELETE FROM project_files WHERE project_id=?', (row[0],))
+        db.execute('DELETE FROM projects WHERE id=?', (row[0],))
 
 
 def get_setting(key, default=''):
@@ -966,8 +956,56 @@ def store_cart_products():
     return [found[pid] for pid in cleaned]
 
 
+def store_product_is_paid(product):
+    """A product is paid only when payment is explicitly required and the price is > 0."""
+    try:
+        return bool(int(product['payment_required'])) and Decimal(str(product['price_kes'] or 0)) > 0
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        return False
+
+
 def store_cart_total(products):
-    return sum((Decimal(str(r['price_kes'] or 0)) if int(r['payment_required']) else Decimal('0.00')) for r in products).quantize(Decimal('0.01'))
+    return sum((Decimal(str(r['price_kes'] or 0)) if store_product_is_paid(r) else Decimal('0.00')) for r in products).quantize(Decimal('0.01'))
+
+
+def store_guest_identity():
+    """Stable guest identifier for free-download analytics during this browser session."""
+    guest_id = (session.get('store_guest_id') or '').strip()
+    if not guest_id:
+        guest_id = 'GUEST-' + secrets.token_hex(10).upper()
+        session['store_guest_id'] = guest_id
+        session.modified = True
+    return guest_id
+
+
+def create_free_store_order(product):
+    """Create an immediately approved order for a genuinely free product.
+
+    This keeps free downloads visible in accounting/audit/download analytics without
+    forcing the visitor through payment checkout.
+    """
+    version = current_product_version(product['id'])
+    if not version:
+        abort(404)
+    guest_id = store_guest_identity()
+    code = order_code()
+    db = get_db()
+    try:
+        db.execute('BEGIN')
+        cur = db.execute("""INSERT INTO store_orders(order_code,buyer_name,buyer_phone,buyer_email,amount_expected,amount_entered,status,manual_note,approved_at,created_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                     (code, 'Guest / Free Download', guest_id, '', 0.0, 0.0, 'approved',
+                      'Free product — no payment required.', now_iso(), now_iso()))
+        order_id = cur.lastrowid
+        cur = db.execute("""INSERT INTO store_order_items(order_id,product_id,version_id,product_name_snapshot,unit_price,access_token,created_at)
+                           VALUES (?,?,?,?,?,?,?)""",
+                     (order_id, product['id'], version['id'], product['name'], 0.0, secrets.token_urlsafe(28), now_iso()))
+        item_id = cur.lastrowid
+        db.commit()
+        return query_one('SELECT * FROM store_order_items WHERE id=?', (item_id,)), query_one('SELECT * FROM store_orders WHERE id=?', (order_id,)), version
+    except Exception:
+        db.rollback()
+        raise
 
 
 def approve_store_order(order_id, payment_code='', payment_received_at=None, receipt_id=None, note='Auto-approved payment match.'):
@@ -1231,6 +1269,63 @@ def store():
     return render_template('store.html', products=products, cart=store_cart_products(), cart_total=store_cart_total(store_cart_products()))
 
 
+@app.route('/store/free/<int:product_id>', methods=['GET', 'POST'])
+def store_get_free(product_id):
+    product = query_one('SELECT * FROM store_products WHERE id=? AND active=1', (product_id,))
+    if not product:
+        abort(404)
+    if store_product_is_paid(product):
+        return redirect(url_for('store_product', slug=product['slug']))
+    item, order, version = create_free_store_order(product)
+    if product['kind'] == 'apk':
+        return redirect(url_for('store_download', access_token=item['access_token']))
+    return redirect(url_for('store_site', access_token=item['access_token']))
+
+
+@app.route('/store/free-download/<slug>')
+def store_free_download(slug):
+    product = store_product_query(slug=slug, include_inactive=False)
+    if not product or product['kind'] != 'apk' or store_product_is_paid(product):
+        abort(404)
+    item, order, version = create_free_store_order(product)
+    path = BASE_DIR / version['artifact_path']
+    if not path.exists():
+        abort(404)
+    record_apk_download(item, order, product, version)
+    response = send_from_directory(str(path.parent), path.name, as_attachment=True, download_name=f"{slugify(product['name'])}-{version['version_label']}.apk")
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
+@app.route('/store/free-site/<slug>/')
+@app.route('/store/free-site/<slug>/<path:asset_path>')
+def store_free_site(slug, asset_path=''):
+    product = store_product_query(slug=slug, include_inactive=False)
+    if not product or product['kind'] != 'website' or store_product_is_paid(product):
+        abort(404)
+    version = current_product_version(product['id'])
+    if not version or not version['website_root']:
+        abort(404)
+    root = BASE_DIR / version['website_root']
+    if not root.exists():
+        abort(404)
+    rel = asset_path.strip('/') if asset_path else (version['website_entry'] or 'index.html')
+    if '..' in Path(rel).parts or Path(rel).is_absolute():
+        abort(404)
+    target = root / rel
+    if target.is_dir():
+        target = target / 'index.html'
+    if not target.exists() or not target.is_file():
+        abort(404)
+    response = send_from_directory(str(target.parent), target.name, as_attachment=False, mimetype=mimetypes.guess_type(target.name)[0])
+    if target.suffix.casefold() in {'.html', '.htm'}:
+        response.headers['Content-Security-Policy'] = 'sandbox allow-scripts'
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
 @app.route('/store/product/<slug>')
 def store_product(slug):
     product = store_product_query(slug=slug, include_inactive=False)
@@ -1279,6 +1374,10 @@ def store_checkout():
         flash('Your cart is empty.', 'error')
         return redirect(url_for('store'))
     total = store_cart_total(products)
+    # A cart containing only free items must never become a payment loop.
+    if total == 0 and request.method == 'GET' and all(not store_product_is_paid(p) for p in products):
+        if len(products) == 1:
+            return redirect(url_for('store_get_free', product_id=products[0]['id']), code=307)
     if request.method == 'POST':
         buyer_name = request.form.get('buyer_name', '').strip()
         buyer_phone = request.form.get('buyer_phone', '').strip()
@@ -1447,7 +1546,7 @@ def store_apk_update_check(slug):
         abort(404)
     current_version = (request.args.get('current_version') or '').strip()
     token = (request.args.get('access_token') or '').strip()
-    paid = int(product['payment_required']) and Decimal(str(product['price_kes'] or 0)) > 0
+    paid = store_product_is_paid(product)
     entitled = False
     if token:
         row = query_one('''SELECT oi.id FROM store_order_items oi JOIN store_orders o ON o.id=oi.order_id
@@ -1455,7 +1554,7 @@ def store_apk_update_check(slug):
         entitled = row is not None
     if paid and not entitled:
         return jsonify({'ok': True, 'update_available': bool(current_version and current_version != product['version_label']), 'requires_purchase': True, 'version': product['version_label']})
-    download_url = url_for('store_download', access_token=token) if token and entitled else None
+    download_url = url_for('store_download', access_token=token) if token and entitled else (url_for('store_free_download', slug=product['slug']) if not paid else None)
     return jsonify({
         'ok': True,
         'product': product['name'],
@@ -1695,7 +1794,7 @@ def admin_store():
             release_notes = request.form.get('release_notes', '').strip()
             version_label = request.form.get('version_label', '').strip() or '1.0.0'
             price = parse_amount(request.form.get('price')) or Decimal('0.00')
-            payment_required = 1 if request.form.get('payment_required') == '1' else 0
+            payment_required = 1 if request.form.get('payment_required') == '1' and price > 0 else 0
             premium_enabled = 1 if request.form.get('premium_enabled') == '1' else 0
             active = 1 if request.form.get('active') == '1' else 0
             artifact = request.files.get('artifact')
@@ -1712,8 +1811,11 @@ def admin_store():
             try:
                 stage, original, file_size, sha256 = stage_store_upload(artifact, kind)
                 generated = generate_website_explanation(stage) if kind == 'website' and Path(original).suffix.casefold() == '.zip' else ''
-                if kind == 'website' and not description:
-                    description = generated or 'Uploaded website package ready for publication.'
+                if kind == 'website' and generated:
+                    if not description:
+                        description = generated or 'Uploaded website package ready for publication.'
+                    if not short_description:
+                        short_description = generated[:280].rstrip()
                 icon_path = ''
                 if icon and icon.filename:
                     icon_stage, icon_original = save_upload(icon, 'store/icons', {'.png','.jpg','.jpeg','.webp','.svg'})
@@ -1786,7 +1888,7 @@ def admin_store_edit(product_id):
         short_description = request.form.get('short_description', '').strip()
         instructions = request.form.get('access_instructions', '').strip()
         price = parse_amount(request.form.get('price')) or Decimal('0.00')
-        payment_required = 1 if request.form.get('payment_required') == '1' else 0
+        payment_required = 1 if request.form.get('payment_required') == '1' and price > 0 else 0
         premium_enabled = 1 if request.form.get('premium_enabled') == '1' else 0
         active = 1 if request.form.get('active') == '1' else 0
         if not name or price < 0 or (payment_required and price <= 0):
@@ -1839,8 +1941,18 @@ def admin_store_version(product_id):
         db.execute('UPDATE store_versions SET artifact_path=?, website_root=?, website_entry=? WHERE id=?', (final_artifact,final_root,entry if product['kind']=='website' else None,version_id))
         db.execute('UPDATE store_products SET current_version_id=?, updated_at=? WHERE id=?', (version_id,now_iso(),product_id))
         # Re-generation is useful when the admin left a website description blank.
-        if product['kind'] == 'website' and not (product['description'] or '').strip() and generated_description:
-            db.execute('UPDATE store_products SET description=? WHERE id=?', (generated_description,product_id))
+        if product['kind'] == 'website' and generated_description:
+            updates = []
+            params = []
+            if not (product['description'] or '').strip():
+                updates.append('description=?')
+                params.append(generated_description)
+            if not (product['short_description'] or '').strip():
+                updates.append('short_description=?')
+                params.append(generated_description[:280].rstrip())
+            if updates:
+                params.append(product_id)
+                db.execute('UPDATE store_products SET ' + ', '.join(updates) + ' WHERE id=?', tuple(params))
         db.commit()
         flash(f'Version {version_label} is live. Existing orders keep their entitlement; downloads now use the latest release.', 'success')
     except Exception as exc:

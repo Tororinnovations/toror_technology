@@ -12,7 +12,7 @@
       <div class="field"><label>Instructions shown after approval</label><textarea name="access_instructions" rows="7">{{ product.access_instructions or '' }}</textarea></div>
       <div class="field"><label>Replace icon (optional)</label><input name="icon" type="file" accept=".png,.jpg,.jpeg,.webp,.svg"></div>
       <div class="store-toggle-row">
-        <label class="store-check"><input type="checkbox" name="payment_required" value="1" {% if product.payment_required %}checked{% endif %}><span><strong>Require payment</strong><small>Exact price match is required before access.</small></span></label>
+        <label class="store-check"><input type="checkbox" name="payment_required" value="1" {% if product.payment_required %}checked{% endif %}><span><strong>Require payment</strong><small>Only paid when this is ON and the price is above KES 0. A KES 0 product is always treated as free.</small></span></label>
         <label class="store-check"><input type="checkbox" name="premium_enabled" value="1" {% if product.premium_enabled %}checked{% endif %}><span><strong>Premium mode</strong><small>Keep the premium switch available for this product.</small></span></label>
         <label class="store-check"><input type="checkbox" name="active" value="1" {% if product.active %}checked{% endif %}><span><strong>Published</strong><small>Uncheck to hide from the public store without deleting anything.</small></span></label>
       </div>
