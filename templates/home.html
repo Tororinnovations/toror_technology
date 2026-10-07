@@ -22,6 +22,21 @@
   <div><strong>04</strong><span>Improve</span><small>We keep it useful as needs change.</small></div>
 </section>
 
+{% if store_products %}
+<section class="content-section home-store-section" id="apps-sites">
+  <div class="section-heading"><div><span class="section-kicker">Apps & Sites</span><h2>Digital products you can actually use.</h2><p class="section-intro">Toror apps and uploaded websites, published from our private product centre.</p></div><a class="btn primary" href="/store">Open store</a></div>
+  <div class="store-grid store-grid-home">
+    {% for product in store_products %}
+    <article class="store-card">
+      <div class="store-card-icon">{% if product.icon_path %}<img src="{{ product.icon_path }}" alt="">{% else %}<span>{{ 'A' if product.kind == 'apk' else 'W' }}</span>{% endif %}</div>
+      <div class="store-card-body"><div class="store-card-tags"><span class="badge">{{ product.kind|title }}</span>{% if product.premium_enabled %}<span class="badge premium-badge">Premium</span>{% endif %}</div><h3>{{ product.name }}</h3><p>{{ product.short_description or product.description }}</p></div>
+      <div class="store-card-footer"><strong>{% if product.payment_required and product.price_kes > 0 %}KES {{ '%.2f'|format(product.price_kes) }}{% else %}Free{% endif %}</strong><a class="text-link" href="/store/product/{{ product.slug }}">Details →</a></div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 <section class="content-section split-section" id="who-we-are">
   <div><span class="section-kicker">Who we are</span><h2>Practical technology, not technology for its own sake.</h2></div>
   <div class="section-copy"><p>{{ about_text }}</p><a class="text-link" href="/about">Read our story →</a></div>

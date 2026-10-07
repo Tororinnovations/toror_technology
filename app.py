@@ -7,6 +7,11 @@ import secrets
 import smtplib
 import sqlite3
 import zipfile
+import re
+import shutil
+import tempfile
+from decimal import Decimal, InvalidOperation
+from html.parser import HTMLParser
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -46,6 +51,14 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / os.environ.get('TOROR_DATA_DIR', 'data')
 UPLOAD_DIR = BASE_DIR / 'static' / 'uploads'
 DB_PATH = Path(os.environ.get('TOROR_DB_PATH', DATA_DIR / 'toror.db'))
+STORE_UPLOAD_DIR = UPLOAD_DIR / 'store'
+STORE_STAGING_DIR = DATA_DIR / 'store_staging'
+STORE_APK_DIR = STORE_UPLOAD_DIR / 'apks'
+STORE_WEB_DIR = STORE_UPLOAD_DIR / 'websites'
+STORE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+STORE_APK_DIR.mkdir(parents=True, exist_ok=True)
+STORE_WEB_DIR.mkdir(parents=True, exist_ok=True)
+STORE_STAGING_DIR.mkdir(parents=True, exist_ok=True)
 
 DATA_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -55,13 +68,18 @@ app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
-    MAX_CONTENT_LENGTH=220 * 1024 * 1024,
+    MAX_CONTENT_LENGTH=650 * 1024 * 1024,
 )
 
 ALLOWED_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.svg'}
 ALLOWED_DOC_EXTS = {'.pdf', '.xlsx', '.xls', '.docx', '.pptx', '.txt'}
 ALLOWED_VIDEO_EXTS = {'.mp4', '.webm', '.mov', '.m4v'}
 ALLOWED_PROJECT_EXTS = ALLOWED_IMAGE_EXTS | ALLOWED_DOC_EXTS | ALLOWED_VIDEO_EXTS
+ALLOWED_APK_EXTS = {'.apk'}
+ALLOWED_WEBSITE_EXTS = {'.zip', '.html', '.htm'}
+MAX_STORE_ARTIFACT_BYTES = 500 * 1024 * 1024
+MAX_WEBSITE_UNCOMPRESSED_BYTES = 700 * 1024 * 1024
+MAX_WEBSITE_FILES = 12000
 
 
 def now_iso() -> str:
@@ -167,6 +185,113 @@ def init_db():
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS store_products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL DEFAULT 'apk',
+        short_description TEXT,
+        description TEXT NOT NULL,
+        price_kes REAL NOT NULL DEFAULT 0,
+        payment_required INTEGER NOT NULL DEFAULT 0,
+        premium_enabled INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        icon_path TEXT,
+        access_instructions TEXT,
+        current_version_id INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS store_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        version_label TEXT NOT NULL,
+        artifact_path TEXT NOT NULL,
+        original_name TEXT NOT NULL,
+        mime_type TEXT,
+        file_size INTEGER NOT NULL DEFAULT 0,
+        sha256 TEXT,
+        release_notes TEXT,
+        website_root TEXT,
+        website_entry TEXT,
+        is_current INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS store_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_code TEXT NOT NULL UNIQUE,
+        buyer_name TEXT NOT NULL,
+        buyer_phone TEXT NOT NULL,
+        buyer_email TEXT,
+        amount_expected REAL NOT NULL DEFAULT 0,
+        amount_entered REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        manual_note TEXT,
+        payment_code TEXT,
+        payment_received_at TEXT,
+        approved_at TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS store_order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        version_id INTEGER,
+        product_name_snapshot TEXT NOT NULL,
+        unit_price REAL NOT NULL DEFAULT 0,
+        access_token TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS payment_receipts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        received_at TEXT NOT NULL,
+        gateway_id TEXT,
+        sim_device TEXT,
+        sender TEXT,
+        payer_name TEXT,
+        payer_phone TEXT,
+        amount REAL,
+        transaction_code TEXT,
+        raw_message TEXT NOT NULL,
+        classification TEXT NOT NULL DEFAULT 'M-PESA CANDIDATE',
+        delivery TEXT,
+        matched_order_id INTEGER,
+        match_reason TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS store_download_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        order_item_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        version_id INTEGER NOT NULL,
+        product_name_snapshot TEXT NOT NULL,
+        buyer_name TEXT NOT NULL,
+        buyer_phone TEXT NOT NULL,
+        buyer_email TEXT,
+        version_label TEXT NOT NULL,
+        download_kind TEXT NOT NULL DEFAULT 'initial',
+        current_version_sent_by_client TEXT,
+        user_agent TEXT,
+        downloaded_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_store_download_product_time ON store_download_events(product_id, downloaded_at);
+    CREATE INDEX IF NOT EXISTS idx_store_download_order_item ON store_download_events(order_item_id, downloaded_at);
+    CREATE TABLE IF NOT EXISTS accounting_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER,
+        product_id INTEGER,
+        amount REAL NOT NULL DEFAULT 0,
+        entry_type TEXT NOT NULL DEFAULT 'sale',
+        reference TEXT,
+        memo TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(order_id, product_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_store_products_active ON store_products(active, id);
+    CREATE INDEX IF NOT EXISTS idx_store_versions_product ON store_versions(product_id, id);
+    CREATE INDEX IF NOT EXISTS idx_store_orders_status ON store_orders(status, id);
+    CREATE INDEX IF NOT EXISTS idx_payment_receipts_received ON payment_receipts(id);
     CREATE TABLE IF NOT EXISTS chat_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         sender TEXT NOT NULL,
@@ -248,6 +373,9 @@ def init_db():
         'certificate_default_note': 'In recognition of your decision to adopt our technology solution and begin a meaningful partnership with Toror Technology Company Ltd. We appreciate your trust and look forward to the value created through this collaboration.',
         'login_enabled': '0',
         'chat_enabled': '0',
+        'store_payment_instructions': 'M-PESA payment instructions have not been configured yet. Please contact Toror Technology Company Ltd before paying.',
+        'store_gateway_secret': '',
+        'store_match_window_hours': '48',
     }
     db = sqlite3.connect(DB_PATH)
     try:
@@ -333,6 +461,9 @@ def professionalize_existing_content(db):
         'certificate_default_note': 'In recognition of your decision to adopt our technology solution and begin a meaningful partnership with Toror Technology Company Ltd. We appreciate your trust and look forward to the value created through this collaboration.',
         'login_enabled': '0',
         'chat_enabled': '0',
+        'store_payment_instructions': 'M-PESA payment instructions have not been configured yet. Please contact Toror Technology Company Ltd before paying.',
+        'store_gateway_secret': '',
+        'store_match_window_hours': '48',
     }
     # These values were placeholders/legacy values in the bundled database.
     replacements = {
@@ -509,6 +640,476 @@ def save_upload(file_storage, subdir='misc', allowed_exts=None):
     return rel, safe_name
 
 
+
+
+def slugify(value):
+    value = re.sub(r'[^a-z0-9]+', '-', (value or '').strip().casefold()).strip('-')
+    return value or f'item-{secrets.token_hex(4)}'
+
+
+def unique_product_slug(name, product_id=None):
+    base = slugify(name)
+    slug = base
+    n = 2
+    while True:
+        row = query_one('SELECT id FROM store_products WHERE slug=?', (slug,))
+        if not row or (product_id is not None and int(row['id']) == int(product_id)):
+            return slug
+        slug = f'{base}-{n}'
+        n += 1
+
+
+def normalize_person_name(value):
+    value = re.sub(r'[^a-z0-9 ]+', ' ', (value or '').casefold())
+    return re.sub(r'\s+', ' ', value).strip()
+
+
+def normalize_phone(value):
+    digits = re.sub(r'\D', '', value or '')
+    if digits.startswith('254') and len(digits) == 12:
+        return '0' + digits[-9:]
+    if len(digits) == 9 and digits[:1] in {'7', '1'}:
+        return '0' + digits
+    if len(digits) == 10 and digits[:2] in {'07', '01'}:
+        return digits
+    return digits
+
+
+def parse_amount(value):
+    if value is None:
+        return None
+    raw = str(value).strip().replace(',', '')
+    if not raw:
+        return None
+    try:
+        return Decimal(raw).quantize(Decimal('0.01'))
+    except (InvalidOperation, ValueError):
+        match = re.search(r'(\d+(?:\.\d+)?)', raw)
+        if not match:
+            return None
+        try:
+            return Decimal(match.group(1)).quantize(Decimal('0.01'))
+        except InvalidOperation:
+            return None
+
+
+def kes_float(value):
+    amount = parse_amount(value) or Decimal('0.00')
+    return float(amount)
+
+
+def money_label(value):
+    amount = parse_amount(value) or Decimal('0.00')
+    return f'KES {amount:,.2f}'
+
+
+def order_code():
+    code = f'TOR-{datetime.now(timezone.utc).strftime("%Y%m%d")}-{secrets.token_hex(4).upper()}'
+    while query_one('SELECT 1 FROM store_orders WHERE order_code=?', (code,)):
+        code = f'TOR-{datetime.now(timezone.utc).strftime("%Y%m%d")}-{secrets.token_hex(4).upper()}'
+    return code
+
+
+def store_settings():
+    return {
+        'payment_instructions': get_setting('store_payment_instructions', ''),
+        'gateway_secret': get_setting('store_gateway_secret', ''),
+        'match_window_hours': int(get_setting('store_match_window_hours', '48') or '48'),
+    }
+
+
+class _WebsiteHTMLInfo(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.title = ''
+        self.meta_description = ''
+        self._in_title = False
+        self._title_parts = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag.lower() == 'title':
+            self._in_title = True
+        if tag.lower() == 'meta':
+            name = (attrs.get('name') or '').casefold()
+            if name == 'description' and attrs.get('content'):
+                self.meta_description = attrs['content'].strip()[:600]
+
+    def handle_endtag(self, tag):
+        if tag.lower() == 'title':
+            self._in_title = False
+            self.title = ' '.join(self._title_parts).strip()[:200]
+
+    def handle_data(self, data):
+        if self._in_title:
+            self._title_parts.append(data.strip())
+
+
+def _safe_zip_member(name):
+    normalized = name.replace('\\', '/')
+    path = Path(normalized)
+    return not normalized.startswith('/') and '..' not in path.parts and not path.is_absolute()
+
+
+def validate_website_zip(path):
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        if not infos:
+            raise ValueError('The website ZIP is empty.')
+        if len(infos) > MAX_WEBSITE_FILES:
+            raise ValueError('The website package contains too many files.')
+        total = 0
+        html_candidates = []
+        for info in infos:
+            name = info.filename.replace('\\', '/')
+            if not _safe_zip_member(name):
+                raise ValueError('The website ZIP contains an unsafe path.')
+            # Reject symlink entries; websites are served as static files only.
+            mode = (info.external_attr >> 16) & 0o170000
+            if mode == 0o120000:
+                raise ValueError('The website ZIP contains a symlink, which is not allowed.')
+            total += info.file_size
+            if total > MAX_WEBSITE_UNCOMPRESSED_BYTES:
+                raise ValueError('The website ZIP expands beyond the permitted size.')
+            if name.casefold().endswith(('.html', '.htm')):
+                html_candidates.append(name)
+        entry = next((x for x in html_candidates if Path(x).name.casefold() == 'index.html'), None)
+        if not entry:
+            entry = next((x for x in html_candidates if Path(x).name.casefold() == 'index.htm'), None)
+        if not entry and html_candidates:
+            entry = sorted(html_candidates)[0]
+        if not entry:
+            raise ValueError('The website package needs at least one HTML entry page.')
+        return {'entry': entry, 'file_count': len(infos), 'uncompressed_size': total}
+
+
+def extract_website_zip(source_path, destination):
+    meta = validate_website_zip(source_path)
+    destination.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(source_path) as archive:
+        for info in archive.infolist():
+            name = info.filename.replace('\\', '/')
+            if name.endswith('/'):
+                continue
+            target = destination / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as src, target.open('wb') as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+    return meta
+
+
+def generate_website_explanation(zip_path):
+    info = validate_website_zip(zip_path)
+    file_names = []
+    readme_excerpt = ''
+    title = ''
+    meta_description = ''
+    with zipfile.ZipFile(zip_path) as archive:
+        names = [i.filename.replace('\\', '/') for i in archive.infolist() if not i.filename.endswith('/')]
+        file_names = names[:1200]
+        readme_name = next((n for n in names if Path(n).name.casefold() in {'readme.md', 'readme.txt'}), None)
+        if readme_name:
+            try:
+                readme_excerpt = archive.read(readme_name).decode('utf-8', errors='ignore').strip()
+            except Exception:
+                readme_excerpt = ''
+        try:
+            raw_html = archive.read(info['entry']).decode('utf-8', errors='ignore')
+            parser = _WebsiteHTMLInfo()
+            parser.feed(raw_html)
+            title = parser.title
+            meta_description = parser.meta_description
+        except Exception:
+            pass
+    lowered = '\n'.join(file_names).casefold()
+    if 'package.json' in lowered:
+        kind_text = 'JavaScript web application'
+    elif 'manifest.webmanifest' in lowered or 'service-worker.js' in lowered or '/sw.js' in lowered:
+        kind_text = 'web app / PWA package'
+    else:
+        kind_text = 'website package'
+    types = []
+    if any(n.casefold().endswith(('.html', '.htm')) for n in file_names): types.append('HTML pages')
+    if any(n.casefold().endswith('.css') for n in file_names): types.append('CSS styles')
+    if any(n.casefold().endswith('.js') for n in file_names): types.append('JavaScript')
+    if any(n.casefold().endswith(('.png','.jpg','.jpeg','.webp','.svg','.gif')) for n in file_names): types.append('images')
+    description = f'Uploaded website package detected as a {kind_text} with {len(file_names)} stored files and entry page {info["entry"]}.'
+    if types:
+        description += ' It includes ' + ', '.join(types) + '.'
+    if title:
+        description += f' The main page title is “{title}”.'
+    if meta_description:
+        description += f' Site description: {meta_description}'
+    elif readme_excerpt:
+        clean = re.sub(r'[#*_>`]+', ' ', readme_excerpt)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        if clean:
+            description += f' Package notes: {clean[:380]}'
+    return description[:1500]
+
+
+def stage_store_upload(file_storage, kind):
+    if not file_storage or not file_storage.filename:
+        raise ValueError('Choose the release file first.')
+    original = secure_filename(file_storage.filename)
+    if not original:
+        raise ValueError('The uploaded filename is not valid.')
+    ext = Path(original).suffix.casefold()
+    allowed = ALLOWED_APK_EXTS if kind == 'apk' else ALLOWED_WEBSITE_EXTS
+    if ext not in allowed:
+        allowed_label = ', '.join(sorted(allowed))
+        raise ValueError(f'Unsupported {kind} file. Allowed: {allowed_label}.')
+    stage = STORE_STAGING_DIR / f'{secrets.token_hex(12)}_{original}'
+    try:
+        file_storage.save(stage)
+        size = stage.stat().st_size
+        if size <= 0:
+            raise ValueError('The uploaded file is empty.')
+        if size > MAX_STORE_ARTIFACT_BYTES:
+            raise ValueError('The release file is too large. The maximum is 500 MB.')
+        sha = hashlib.sha256()
+        with stage.open('rb') as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+                sha.update(chunk)
+        if kind == 'apk':
+            try:
+                with zipfile.ZipFile(stage) as apk:
+                    if apk.testzip() is not None:
+                        raise ValueError('The APK archive failed integrity checking.')
+                    if 'AndroidManifest.xml' not in apk.namelist():
+                        raise ValueError('The uploaded file is not a valid Android APK (AndroidManifest.xml is missing).')
+            except zipfile.BadZipFile as exc:
+                raise ValueError('The uploaded APK is corrupt or is not a valid APK package.') from exc
+        else:
+            if ext == '.zip':
+                validate_website_zip(stage)
+            else:
+                data = stage.read_bytes()
+                if b'<html' not in data[:10000].casefold() and b'<!doctype html' not in data[:10000].casefold():
+                    raise ValueError('The uploaded HTML file does not appear to be a valid HTML page.')
+        return stage, original, size, sha.hexdigest()
+    except Exception:
+        stage.unlink(missing_ok=True)
+        raise
+
+
+def finalize_store_artifact(stage, kind, product_id, version_id):
+    suffix = Path(stage.name).suffix.casefold()
+    if kind == 'apk':
+        final_dir = STORE_APK_DIR / str(product_id)
+        final_dir.mkdir(parents=True, exist_ok=True)
+        final = final_dir / f'v{version_id}_{stage.name.split("_", 1)[-1]}'
+        os.replace(stage, final)
+        return str(final.relative_to(BASE_DIR)).replace('\\', '/'), None, None
+    final_dir = STORE_WEB_DIR / str(product_id) / f'v{version_id}'
+    final_dir.mkdir(parents=True, exist_ok=True)
+    if suffix == '.zip':
+        # Keep the original package beside the extracted release for rollback/audit.
+        zip_target = final_dir / stage.name.split('_', 1)[-1]
+        try:
+            os.replace(stage, zip_target)
+            web_root = final_dir / 'site'
+            meta = extract_website_zip(zip_target, web_root)
+            return str(zip_target.relative_to(BASE_DIR)).replace('\\', '/'), str(web_root.relative_to(BASE_DIR)).replace('\\', '/'), meta['entry']
+        except Exception:
+            shutil.rmtree(final_dir, ignore_errors=True)
+            stage.unlink(missing_ok=True)
+            raise
+    html_target = final_dir / 'index.html'
+    os.replace(stage, html_target)
+    return str(html_target.relative_to(BASE_DIR)).replace('\\', '/'), str(final_dir.relative_to(BASE_DIR)).replace('\\', '/'), 'index.html'
+
+
+def store_product_query(slug=None, include_inactive=False):
+    base = '''SELECT p.*, v.id AS version_id, v.version_label, v.artifact_path, v.original_name AS version_original_name,
+                     v.mime_type AS version_mime_type, v.file_size AS version_file_size, v.sha256 AS version_sha256,
+                     v.release_notes, v.website_root, v.website_entry, v.created_at AS version_created_at
+              FROM store_products p LEFT JOIN store_versions v ON v.id=p.current_version_id'''
+    args = []
+    where = []
+    if slug:
+        where.append('p.slug=?'); args.append(slug)
+    if not include_inactive:
+        where.append('p.active=1')
+    if where:
+        base += ' WHERE ' + ' AND '.join(where)
+    base += ' ORDER BY p.id DESC'
+    if slug:
+        return query_one(base, tuple(args))
+    return query_all(base, tuple(args))
+
+
+def store_cart_products():
+    raw = session.get('store_cart') or []
+    ids = []
+    for item in raw:
+        try:
+            pid = int(item)
+        except (TypeError, ValueError):
+            continue
+        if pid not in ids:
+            ids.append(pid)
+    if ids != raw:
+        session['store_cart'] = ids
+        session.modified = True
+    if not ids:
+        return []
+    placeholders = ','.join('?' for _ in ids)
+    rows = query_all(f'''SELECT p.*, v.id AS version_id, v.version_label, v.file_size AS version_file_size
+                         FROM store_products p LEFT JOIN store_versions v ON v.id=p.current_version_id
+                         WHERE p.id IN ({placeholders}) AND p.active=1 ORDER BY p.id DESC''', tuple(ids))
+    found = {int(r['id']): r for r in rows}
+    cleaned = [pid for pid in ids if pid in found]
+    if cleaned != ids:
+        session['store_cart'] = cleaned
+        session.modified = True
+    return [found[pid] for pid in cleaned]
+
+
+def store_cart_total(products):
+    return sum((Decimal(str(r['price_kes'] or 0)) if int(r['payment_required']) else Decimal('0.00')) for r in products).quantize(Decimal('0.01'))
+
+
+def approve_store_order(order_id, payment_code='', payment_received_at=None, receipt_id=None, note='Auto-approved payment match.'):
+    db = get_db()
+    order = db.execute('SELECT * FROM store_orders WHERE id=?', (order_id,)).fetchone()
+    if not order:
+        raise ValueError('Order not found.')
+    if order['status'] == 'approved':
+        return False
+    paid_at = payment_received_at or now_iso()
+    code = (payment_code or '').strip()
+    db.execute('''UPDATE store_orders SET status='approved', payment_code=?, payment_received_at=?, approved_at=?, manual_note=? WHERE id=?''',
+               (code, paid_at, now_iso(), note, order_id))
+    items = db.execute('SELECT * FROM store_order_items WHERE order_id=?', (order_id,)).fetchall()
+    for item in items:
+        product = db.execute('SELECT id, name FROM store_products WHERE id=?', (item['product_id'],)).fetchone()
+        if not product or Decimal(str(item['unit_price'] or 0)) <= 0:
+            continue
+        db.execute('''INSERT OR IGNORE INTO accounting_entries(order_id,product_id,amount,entry_type,reference,memo,created_at)
+                      VALUES (?,?,?,?,?,?,?)''',
+                   (order_id, item['product_id'], float(item['unit_price']), 'sale', code or order['order_code'],
+                    f'Store sale: {item["product_name_snapshot"]}', now_iso()))
+    db.commit()
+    if receipt_id:
+        db.execute('UPDATE payment_receipts SET matched_order_id=?, classification=?, match_reason=? WHERE id=?',
+                   (order_id, 'PAYMENT_MATCHED', note, receipt_id))
+        db.commit()
+    return True
+
+
+def reject_store_order(order_id, note='Rejected by administrator.'):
+    order = query_one('SELECT status FROM store_orders WHERE id=?', (order_id,))
+    if not order or order['status'] == 'approved':
+        return False
+    execute("UPDATE store_orders SET status='rejected', manual_note=? WHERE id=?", (note, order_id))
+    return True
+
+
+def parse_gateway_payload(payload):
+    payload = payload or {}
+    raw_message = str(payload.get('raw_message') or payload.get('message') or payload.get('text') or payload.get('body') or '').strip()
+    amount = parse_amount(payload.get('amount') or payload.get('paid') or payload.get('transaction_amount'))
+    payer_name = (payload.get('payer_name') or payload.get('sender_name') or payload.get('customer_name') or payload.get('name') or '').strip()
+    payer_phone = (payload.get('payer_phone') or payload.get('sender_phone') or payload.get('customer_phone') or payload.get('phone') or '').strip()
+    tx_code = (payload.get('transaction_code') or payload.get('mpesa_code') or payload.get('code') or '').strip().upper()
+    gateway_id = str(payload.get('gateway_id') or payload.get('message_id') or payload.get('id') or '').strip()
+    sender = str(payload.get('sender') or payload.get('from') or '').strip()
+    sim_device = str(payload.get('sim_device') or payload.get('device') or payload.get('sim') or '').strip()
+    received_at = str(payload.get('received_at') or payload.get('timestamp') or now_iso()).strip()
+    delivery = str(payload.get('delivery') or payload.get('status') or 'RECEIVED').strip()
+    if raw_message:
+        if not amount:
+            m = re.search(r'\b(?:Ksh|KES)\s*([0-9][0-9,]*(?:\.\d+)?)', raw_message, flags=re.I)
+            if m: amount = parse_amount(m.group(1))
+        if not tx_code:
+            m = re.search(r'\b([A-Z0-9]{9,12})\s+Confirmed\b', raw_message, flags=re.I)
+            if m: tx_code = m.group(1).upper()
+        if not payer_phone:
+            m = re.search(r'(?:\+?254|0)(?:7|1)\d{8}\b', raw_message)
+            if m: payer_phone = m.group(0)
+        if not payer_name:
+            m = re.search(r'\bfrom\s+([A-Za-z][A-Za-z .\'’-]{1,80}?)\s+(?:\+?254|0)(?:7|1)\d{8}\b', raw_message, flags=re.I)
+            if m: payer_name = m.group(1).strip()
+    return {
+        'raw_message': raw_message,
+        'amount': amount,
+        'payer_name': payer_name,
+        'payer_phone': payer_phone,
+        'transaction_code': tx_code,
+        'gateway_id': gateway_id,
+        'sender': sender,
+        'sim_device': sim_device,
+        'received_at': received_at,
+        'delivery': delivery,
+    }
+
+
+def parse_datetime(value):
+    if not value:
+        return None
+    raw = str(value).strip().replace('Z', '+00:00')
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def classify_gateway_payment(parsed, receipt_id):
+    amount = parsed['amount']
+    payer_name = normalize_person_name(parsed['payer_name'])
+    payer_phone = normalize_phone(parsed['payer_phone'])
+    if amount is None or not payer_name or not payer_phone:
+        reason = 'Receipt is missing an exact amount, payer name, or payer phone; manual review required.'
+        execute('UPDATE payment_receipts SET classification=?, match_reason=? WHERE id=?', ('PAYMENT_UNMATCHED', reason, receipt_id))
+        return None, reason
+    duplicate = query_one('SELECT id, matched_order_id FROM payment_receipts WHERE id<>? AND ((transaction_code<>? AND transaction_code IS NOT NULL AND transaction_code<>\'\') OR (gateway_id<>? AND gateway_id IS NOT NULL AND gateway_id<>\'\')) AND (transaction_code=? OR gateway_id=?) LIMIT 1',
+                          (receipt_id, parsed['transaction_code'], parsed['gateway_id'], parsed['transaction_code'], parsed['gateway_id'])) if (parsed['transaction_code'] or parsed['gateway_id']) else None
+    if duplicate:
+        reason = 'The gateway transaction appears to have been received before; duplicate receipt held for review.'
+        execute('UPDATE payment_receipts SET classification=?, match_reason=? WHERE id=?', ('DUPLICATE', reason, receipt_id))
+        return None, reason
+    window_hours = store_settings()['match_window_hours']
+    candidates = query_all("SELECT * FROM store_orders WHERE status='pending' ORDER BY id ASC")
+    exact = []
+    receipt_dt = parse_datetime(parsed['received_at']) or datetime.now(timezone.utc)
+    for order in candidates:
+        order_dt = parse_datetime(order['created_at']) or datetime.now(timezone.utc)
+        if receipt_dt < order_dt - timedelta(minutes=5) or receipt_dt > order_dt + timedelta(hours=window_hours):
+            continue
+        expected = Decimal(str(order['amount_expected'] or 0)).quantize(Decimal('0.01'))
+        if expected != amount:
+            continue
+        if normalize_person_name(order['buyer_name']) != payer_name:
+            continue
+        if normalize_phone(order['buyer_phone']) != payer_phone:
+            continue
+        exact.append(order)
+    if len(exact) == 1:
+        order = exact[0]
+        code = parsed['transaction_code'] or parsed['gateway_id'] or f'RECEIPT-{receipt_id}'
+        note = 'Auto-approved: exact pending order match on normalized name, normalized phone, amount, and time window.'
+        approve_store_order(order['id'], code, parsed['received_at'], receipt_id, note)
+        return order['id'], note
+    if len(exact) > 1:
+        reason = 'More than one pending order matched the same name, phone, amount and time window; manual review required.'
+        execute('UPDATE payment_receipts SET classification=?, match_reason=? WHERE id=?', ('PAYMENT_AMBIGUOUS', reason, receipt_id))
+        return None, reason
+    reason = 'No pending order matched the payer name, phone, amount and time window.'
+    execute('UPDATE payment_receipts SET classification=?, match_reason=? WHERE id=?', ('PAYMENT_UNMATCHED', reason, receipt_id))
+    return None, reason
+
+
+def current_product_version(product_id):
+    return query_one('SELECT * FROM store_versions WHERE id=(SELECT current_version_id FROM store_products WHERE id=?)', (product_id,))
+
+
+def render_store_access(item, product, version):
+    return render_template('store_access.html', item=item, product=product, version=version, money_label=money_label)
+
 def public_logo():
     logo = get_setting('logo_path', '/static/default-logo.svg')
     return logo if logo else '/static/default-logo.svg'
@@ -601,6 +1202,8 @@ def inject_globals():
         'admin_name': get_admin_name(),
         'current_year': datetime.now().year,
         'current_date_label': datetime.now().strftime('%d %B %Y'),
+        'store_cart_count': len(store_cart_products()),
+        'store_payment_instructions': get_setting('store_payment_instructions', ''),
     }
 
 
@@ -616,7 +1219,253 @@ def add_cache_headers(resp):
 @app.route('/')
 def index():
     projects = query_all("SELECT * FROM projects WHERE status <> 'Draft' ORDER BY id DESC LIMIT 6")
-    return render_template('home.html', projects=projects)
+    store_products = store_product_query(include_inactive=False)[:8]
+    return render_template('home.html', projects=projects, store_products=store_products, store_cart_count=len(store_cart_products()))
+
+
+
+
+@app.route('/store')
+def store():
+    products = store_product_query(include_inactive=False)
+    return render_template('store.html', products=products, cart=store_cart_products(), cart_total=store_cart_total(store_cart_products()))
+
+
+@app.route('/store/product/<slug>')
+def store_product(slug):
+    product = store_product_query(slug=slug, include_inactive=False)
+    if not product:
+        abort(404)
+    return render_template('store_product.html', product=product, version=current_product_version(product['id']), cart_count=len(store_cart_products()))
+
+
+@app.route('/store/cart')
+def store_cart():
+    products = store_cart_products()
+    return render_template('store_checkout.html', products=products, cart=True, cart_total=store_cart_total(products), store_settings=store_settings(), order=None)
+
+
+@app.route('/store/cart/add/<int:product_id>', methods=['POST'])
+def store_cart_add(product_id):
+    product = query_one('SELECT id, slug, active FROM store_products WHERE id=?', (product_id,))
+    if not product or not int(product['active']):
+        abort(404)
+    cart = store_cart_products()
+    ids = [int(x['id']) for x in cart]
+    if product_id not in ids:
+        ids.append(product_id)
+    session['store_cart'] = ids
+    session.modified = True
+    flash('Added to cart.', 'success')
+    return redirect(request.form.get('next') or url_for('store'))
+
+
+@app.route('/store/cart/remove/<int:product_id>', methods=['POST'])
+def store_cart_remove(product_id):
+    ids = []
+    for item in session.get('store_cart') or []:
+        try: pid = int(item)
+        except (TypeError, ValueError): continue
+        if pid != product_id: ids.append(pid)
+    session['store_cart'] = ids
+    session.modified = True
+    return redirect(url_for('store_cart'))
+
+
+@app.route('/store/checkout', methods=['GET', 'POST'])
+def store_checkout():
+    products = store_cart_products()
+    if not products:
+        flash('Your cart is empty.', 'error')
+        return redirect(url_for('store'))
+    total = store_cart_total(products)
+    if request.method == 'POST':
+        buyer_name = request.form.get('buyer_name', '').strip()
+        buyer_phone = request.form.get('buyer_phone', '').strip()
+        buyer_email = request.form.get('buyer_email', '').strip()
+        amount_entered = parse_amount(request.form.get('amount'))
+        if not buyer_name or not buyer_phone:
+            flash('Name and phone number are required.', 'error')
+            return redirect(url_for('store_checkout'))
+        if total > 0 and amount_entered != total:
+            flash(f'Enter the exact amount: {money_label(total)}.', 'error')
+            return redirect(url_for('store_checkout'))
+        amount_value = float(amount_entered or Decimal('0.00'))
+        code = order_code()
+        db = get_db()
+        try:
+            db.execute('BEGIN')
+            cur = db.execute('''INSERT INTO store_orders(order_code,buyer_name,buyer_phone,buyer_email,amount_expected,amount_entered,status,created_at)
+                                VALUES (?,?,?,?,?,?,?,?)''', (code, buyer_name, buyer_phone, buyer_email, float(total), amount_value, 'pending' if total > 0 else 'approved', now_iso()))
+            order_id = cur.lastrowid
+            for product in products:
+                db.execute('''INSERT INTO store_order_items(order_id,product_id,version_id,product_name_snapshot,unit_price,access_token,created_at)
+                              VALUES (?,?,?,?,?,?,?)''', (order_id, product['id'], product['version_id'], product['name'], float(product['price_kes'] or 0), secrets.token_urlsafe(28), now_iso()))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        if total == 0:
+            # Free products do not enter the payment stream.
+            execute("UPDATE store_orders SET approved_at=?, manual_note=? WHERE id=?", (now_iso(), 'Free order — no payment required.', order_id))
+            session['store_cart'] = []
+            session.modified = True
+            return redirect(url_for('store_order', order_code=code))
+        session['store_cart'] = []
+        session.modified = True
+        return redirect(url_for('store_order', order_code=code))
+    return render_template('store_checkout.html', products=products, cart=False, cart_total=total, store_settings=store_settings(), order=None)
+
+
+@app.route('/store/order/<order_code>')
+def store_order(order_code):
+    order = query_one('SELECT * FROM store_orders WHERE order_code=?', (order_code.upper(),))
+    if not order:
+        abort(404)
+    items = query_all('''SELECT oi.*, p.kind, p.slug, p.active, p.icon_path, p.access_instructions, p.current_version_id,
+                                v.version_label, v.original_name, v.file_size
+                         FROM store_order_items oi JOIN store_products p ON p.id=oi.product_id
+                         LEFT JOIN store_versions v ON v.id=p.current_version_id
+                         WHERE oi.order_id=? ORDER BY oi.id ASC''', (order['id'],))
+    return render_template('store_order.html', order=order, items=items, store_settings=store_settings(), money_label=money_label)
+
+
+@app.route('/api/store/order/<order_code>')
+def store_order_api(order_code):
+    order = query_one('SELECT id,order_code,status,approved_at,manual_note,payment_code,amount_expected FROM store_orders WHERE order_code=?', (order_code.upper(),))
+    if not order:
+        return jsonify({'ok': False, 'error': 'Order not found'}), 404
+    items = query_all('''SELECT oi.id, oi.access_token, p.name, p.kind, p.slug, v.version_label
+                         FROM store_order_items oi JOIN store_products p ON p.id=oi.product_id
+                         LEFT JOIN store_versions v ON v.id=p.current_version_id WHERE oi.order_id=?''', (order['id'],))
+    return jsonify({'ok': True, 'order': dict(order), 'items': [dict(x) for x in items]})
+
+
+@app.route('/store/access/<access_token>')
+def store_access(access_token):
+    item = query_one('SELECT * FROM store_order_items WHERE access_token=?', (access_token,))
+    if not item:
+        abort(404)
+    order = query_one('SELECT * FROM store_orders WHERE id=?', (item['order_id'],))
+    if not order or order['status'] != 'approved':
+        return redirect(url_for('store_order', order_code=order['order_code'] if order else ''))
+    product = query_one('SELECT * FROM store_products WHERE id=?', (item['product_id'],))
+    if not product:
+        abort(404)
+    version = current_product_version(product['id'])
+    return render_store_access(item, product, version)
+
+
+def record_apk_download(item, order, product, version):
+    """Record a served APK download without ever blocking the actual file delivery."""
+    try:
+        previous = query_one('SELECT COUNT(*) c FROM store_download_events WHERE order_item_id=?', (item['id'],))
+        prior_count = int(previous['c'] or 0)
+        client_version = (request.args.get('current_version') or '').strip()[:100]
+        if client_version and client_version != (version['version_label'] or ''):
+            kind = 'update'
+        elif prior_count == 0:
+            kind = 'initial'
+        else:
+            kind = 'redownload'
+        execute("""INSERT INTO store_download_events(
+                    order_id,order_item_id,product_id,version_id,product_name_snapshot,
+                    buyer_name,buyer_phone,buyer_email,version_label,download_kind,
+                    current_version_sent_by_client,user_agent,downloaded_at
+                  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+            item['order_id'], item['id'], item['product_id'], version['id'], product['name'],
+            order['buyer_name'], order['buyer_phone'], order['buyer_email'], version['version_label'],
+            kind, client_version or None, (request.headers.get('User-Agent') or '')[:500], now_iso()
+        ))
+    except Exception:
+        # Analytics must never make a valid buyer's APK unavailable.
+        try:
+            get_db().rollback()
+        except Exception:
+            pass
+
+
+@app.route('/store/download/<access_token>')
+def store_download(access_token):
+    item = query_one('SELECT * FROM store_order_items WHERE access_token=?', (access_token,))
+    if not item:
+        abort(404)
+    order = query_one('SELECT * FROM store_orders WHERE id=?', (item['order_id'],))
+    if not order or order['status'] != 'approved':
+        abort(403)
+    product = query_one('SELECT * FROM store_products WHERE id=?', (item['product_id'],))
+    version = current_product_version(item['product_id']) if product else None
+    if not product or not version or product['kind'] != 'apk':
+        abort(404)
+    path = BASE_DIR / version['artifact_path']
+    if not path.exists():
+        abort(404)
+    record_apk_download(item, order, product, version)
+    response = send_from_directory(str(path.parent), path.name, as_attachment=True, download_name=f"{slugify(product['name'])}-{version['version_label']}.apk")
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
+@app.route('/store/site/<access_token>/')
+@app.route('/store/site/<access_token>/<path:asset_path>')
+def store_site(access_token, asset_path=''):
+    item = query_one('SELECT * FROM store_order_items WHERE access_token=?', (access_token,))
+    if not item:
+        abort(404)
+    order = query_one('SELECT status FROM store_orders WHERE id=?', (item['order_id'],))
+    if not order or order['status'] != 'approved':
+        abort(403)
+    product = query_one('SELECT * FROM store_products WHERE id=?', (item['product_id'],))
+    version = current_product_version(item['product_id']) if product else None
+    if not product or not version or product['kind'] != 'website' or not version['website_root']:
+        abort(404)
+    root = BASE_DIR / version['website_root']
+    if not root.exists():
+        abort(404)
+    rel = asset_path.strip('/') if asset_path else (version['website_entry'] or 'index.html')
+    if '..' in Path(rel).parts or Path(rel).is_absolute():
+        abort(404)
+    target = root / rel
+    if target.is_dir():
+        target = target / 'index.html'
+    if not target.exists() or not target.is_file():
+        abort(404)
+    response = send_from_directory(str(target.parent), target.name, as_attachment=False, mimetype=mimetypes.guess_type(target.name)[0])
+    # Uploaded websites are sandboxed so their JavaScript cannot read the Toror application.
+    if target.suffix.casefold() in {'.html', '.htm'}:
+        response.headers['Content-Security-Policy'] = 'sandbox allow-scripts'
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.route('/api/store/apk/<slug>/update-check')
+def store_apk_update_check(slug):
+    product = store_product_query(slug=slug, include_inactive=False)
+    if not product or product['kind'] != 'apk' or not product['version_id']:
+        abort(404)
+    current_version = (request.args.get('current_version') or '').strip()
+    token = (request.args.get('access_token') or '').strip()
+    paid = int(product['payment_required']) and Decimal(str(product['price_kes'] or 0)) > 0
+    entitled = False
+    if token:
+        row = query_one('''SELECT oi.id FROM store_order_items oi JOIN store_orders o ON o.id=oi.order_id
+                           WHERE oi.access_token=? AND oi.product_id=? AND o.status='approved' LIMIT 1''', (token, product['id']))
+        entitled = row is not None
+    if paid and not entitled:
+        return jsonify({'ok': True, 'update_available': bool(current_version and current_version != product['version_label']), 'requires_purchase': True, 'version': product['version_label']})
+    download_url = url_for('store_download', access_token=token) if token and entitled else None
+    return jsonify({
+        'ok': True,
+        'product': product['name'],
+        'version': product['version_label'],
+        'current_version': current_version,
+        'update_available': current_version != product['version_label'],
+        'sha256': product['version_sha256'],
+        'download_url': download_url,
+        'notes': product['release_notes'] or '',
+    })
 
 
 @app.route('/about')
@@ -804,10 +1653,236 @@ def admin_dashboard():
         'vault': query_one('SELECT COUNT(*) c FROM vault_files')['c'],
         'messages': query_one('SELECT COUNT(*) c FROM chat_messages')['c'],
         'certificates': query_one('SELECT COUNT(*) c FROM certificates')['c'],
+        'store_products': query_one('SELECT COUNT(*) c FROM store_products')['c'],
+        'store_pending': query_one("SELECT COUNT(*) c FROM store_orders WHERE status='pending'")['c'],
+        'store_income': query_one('SELECT COALESCE(SUM(amount),0) c FROM accounting_entries')['c'],
+        'store_downloads': query_one('SELECT COUNT(*) c FROM store_download_events')['c'],
+        'store_downloaders': query_one('SELECT COUNT(DISTINCT buyer_phone) c FROM store_download_events')['c'],
     }
     recent_users = query_all('SELECT * FROM users ORDER BY id DESC LIMIT 8')
     recent_contacts = query_all('SELECT * FROM contacts ORDER BY id DESC LIMIT 8')
-    return render_template('admin_dashboard.html', stats=stats, recent_users=recent_users, recent_contacts=recent_contacts, admin_name=get_admin_name())
+    recent_orders = query_all('SELECT * FROM store_orders ORDER BY id DESC LIMIT 8')
+    return render_template('admin_dashboard.html', stats=stats, recent_users=recent_users, recent_contacts=recent_contacts, recent_orders=recent_orders, admin_name=get_admin_name())
+
+
+
+
+@app.route('/admin/store', methods=['GET', 'POST'])
+@admin_required
+def admin_store():
+    if request.method == 'POST':
+        action = request.form.get('action', '').strip()
+        if action == 'settings':
+            secret = request.form.get('store_gateway_secret', '').strip()
+            instructions = request.form.get('store_payment_instructions', '').strip()
+            window_raw = request.form.get('store_match_window_hours', '48').strip()
+            try:
+                window = max(1, min(168, int(window_raw)))
+            except ValueError:
+                window = 48
+            if secret:
+                set_setting('store_gateway_secret', secret)
+            set_setting('store_payment_instructions', instructions)
+            set_setting('store_match_window_hours', str(window))
+            flash('Store payment and gateway settings saved.', 'success')
+            return redirect(url_for('admin_store'))
+        if action == 'create_product':
+            name = request.form.get('name', '').strip()
+            kind = request.form.get('kind', 'apk').strip().lower()
+            description = request.form.get('description', '').strip()
+            short_description = request.form.get('short_description', '').strip()
+            instructions = request.form.get('access_instructions', '').strip()
+            release_notes = request.form.get('release_notes', '').strip()
+            version_label = request.form.get('version_label', '').strip() or '1.0.0'
+            price = parse_amount(request.form.get('price')) or Decimal('0.00')
+            payment_required = 1 if request.form.get('payment_required') == '1' else 0
+            premium_enabled = 1 if request.form.get('premium_enabled') == '1' else 0
+            active = 1 if request.form.get('active') == '1' else 0
+            artifact = request.files.get('artifact')
+            icon = request.files.get('icon')
+            if kind not in {'apk','website'}:
+                flash('Choose APK or Website.', 'error'); return redirect(url_for('admin_store'))
+            if not name or not artifact or not artifact.filename:
+                flash('Name and the release file are required.', 'error'); return redirect(url_for('admin_store'))
+            if price < 0:
+                flash('Price cannot be negative.', 'error'); return redirect(url_for('admin_store'))
+            if payment_required and price <= 0:
+                flash('A paid product must have a price greater than zero.', 'error'); return redirect(url_for('admin_store'))
+            stage = None; icon_stage = None; final_artifact = None; final_root = None
+            try:
+                stage, original, file_size, sha256 = stage_store_upload(artifact, kind)
+                generated = generate_website_explanation(stage) if kind == 'website' and Path(original).suffix.casefold() == '.zip' else ''
+                if kind == 'website' and not description:
+                    description = generated or 'Uploaded website package ready for publication.'
+                icon_path = ''
+                if icon and icon.filename:
+                    icon_stage, icon_original = save_upload(icon, 'store/icons', {'.png','.jpg','.jpeg','.webp','.svg'})
+                    icon_path = '/' + icon_stage if not icon_stage.startswith('/') else icon_stage
+                db = get_db()
+                db.execute('BEGIN')
+                slug = unique_product_slug(name)
+                cur = db.execute('''INSERT INTO store_products(name,slug,kind,short_description,description,price_kes,payment_required,premium_enabled,active,icon_path,access_instructions,created_at,updated_at)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', (name,slug,kind,short_description,description,float(price),payment_required,premium_enabled,active,icon_path,instructions,now_iso(),now_iso()))
+                product_id = cur.lastrowid
+                cur = db.execute('''INSERT INTO store_versions(product_id,version_label,artifact_path,original_name,mime_type,file_size,sha256,release_notes,is_current,created_at)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?)''', (product_id,version_label,'PENDING',original,mimetypes.guess_type(original)[0] or ('application/vnd.android.package-archive' if kind=='apk' else 'text/html'),file_size,sha256,release_notes,1,now_iso()))
+                version_id = cur.lastrowid
+                final_artifact, final_root, entry = finalize_store_artifact(stage, kind, product_id, version_id)
+                stage = None
+                db.execute('''UPDATE store_versions SET artifact_path=?, website_root=?, website_entry=? WHERE id=?''', (final_artifact,final_root,entry if kind=='website' else None,version_id))
+                db.execute('UPDATE store_products SET current_version_id=?, updated_at=? WHERE id=?', (version_id,now_iso(),product_id))
+                db.commit()
+                if icon_stage:
+                    icon_stage = None
+                flash(f'{kind.title()} product “{name}” published.', 'success')
+            except Exception as exc:
+                try: get_db().rollback()
+                except Exception: pass
+                if stage: Path(stage).unlink(missing_ok=True)
+                if final_artifact: (BASE_DIR / final_artifact).unlink(missing_ok=True)
+                if final_root and (BASE_DIR / final_root).exists() and not Path(final_root).samefile(BASE_DIR):
+                    shutil.rmtree(BASE_DIR / final_root, ignore_errors=True)
+                if icon_stage: (BASE_DIR / icon_stage).unlink(missing_ok=True)
+                flash(f'Product was not published because the new release could not be committed safely: {exc}', 'error')
+            return redirect(url_for('admin_store'))
+    products = store_product_query(include_inactive=True)
+    orders = query_all('''SELECT o.*, GROUP_CONCAT(oi.product_name_snapshot, ', ') AS item_names
+                          FROM store_orders o LEFT JOIN store_order_items oi ON oi.order_id=o.id
+                          GROUP BY o.id ORDER BY o.id DESC LIMIT 80''')
+    receipts = query_all('SELECT * FROM payment_receipts ORDER BY id DESC LIMIT 40')
+    download_stats = query_one('SELECT COUNT(*) total, COUNT(DISTINCT buyer_phone) unique_downloaders FROM store_download_events')
+    download_products = query_all("""SELECT p.id, p.name, p.kind, p.slug, p.active,
+                                           COUNT(d.id) AS download_count,
+                                           COUNT(DISTINCT d.buyer_phone) AS unique_downloaders,
+                                           MAX(d.downloaded_at) AS last_downloaded_at
+                                    FROM store_products p LEFT JOIN store_download_events d ON d.product_id=p.id
+                                    GROUP BY p.id ORDER BY download_count DESC, p.id DESC""")
+    recent_downloads = query_all("""SELECT d.*, p.slug, p.kind, o.order_code
+                                   FROM store_download_events d
+                                   JOIN store_products p ON p.id=d.product_id
+                                   JOIN store_orders o ON o.id=d.order_id
+                                   ORDER BY d.id DESC LIMIT 60""")
+    ledger = query_all('''SELECT a.*, o.order_code, p.name AS product_name FROM accounting_entries a
+                          LEFT JOIN store_orders o ON o.id=a.order_id LEFT JOIN store_products p ON p.id=a.product_id
+                          ORDER BY a.id DESC LIMIT 80''')
+    total_income = sum((Decimal(str(r['amount'] or 0)) for r in ledger), Decimal('0.00'))
+    return render_template('admin_store.html', products=products, orders=orders, receipts=receipts, ledger=ledger, total_income=total_income, gateway_url=url_for('payment_gateway_receiver', _external=True), store_settings=store_settings(), money_label=money_label, download_stats=download_stats, download_products=download_products, recent_downloads=recent_downloads)
+
+
+@app.route('/admin/store/<int:product_id>/edit', methods=['GET', 'POST'])
+@admin_required
+def admin_store_edit(product_id):
+    product = query_one('SELECT * FROM store_products WHERE id=?', (product_id,))
+    if not product:
+        abort(404)
+    if request.method == 'POST':
+        action = request.form.get('action', 'details')
+        if action == 'archive':
+            execute('UPDATE store_products SET active=0, updated_at=? WHERE id=?', (now_iso(), product_id))
+            flash('Product archived. Its releases, orders and accounting history remain intact.', 'success')
+            return redirect(url_for('admin_store'))
+        name = request.form.get('name', '').strip()
+        description = request.form.get('description', '').strip()
+        short_description = request.form.get('short_description', '').strip()
+        instructions = request.form.get('access_instructions', '').strip()
+        price = parse_amount(request.form.get('price')) or Decimal('0.00')
+        payment_required = 1 if request.form.get('payment_required') == '1' else 0
+        premium_enabled = 1 if request.form.get('premium_enabled') == '1' else 0
+        active = 1 if request.form.get('active') == '1' else 0
+        if not name or price < 0 or (payment_required and price <= 0):
+            flash('Name is required; price cannot be negative; paid products must cost more than zero.', 'error')
+            return redirect(url_for('admin_store_edit', product_id=product_id))
+        slug = unique_product_slug(name, product_id)
+        execute('''UPDATE store_products SET name=?,slug=?,short_description=?,description=?,price_kes=?,payment_required=?,premium_enabled=?,active=?,access_instructions=?,updated_at=? WHERE id=?''',
+                (name,slug,short_description,description, float(price),payment_required,premium_enabled,active,instructions,now_iso(),product_id))
+        icon = request.files.get('icon')
+        if icon and icon.filename:
+            try:
+                rel, _ = save_upload(icon, 'store/icons', {'.png','.jpg','.jpeg','.webp','.svg'})
+                execute('UPDATE store_products SET icon_path=? WHERE id=?', ('/'+rel if not rel.startswith('/') else rel, product_id))
+            except ValueError as exc:
+                flash(str(exc), 'error')
+                return redirect(url_for('admin_store_edit', product_id=product_id))
+        flash('Product details updated.', 'success')
+        return redirect(url_for('admin_store'))
+    versions = query_all('SELECT * FROM store_versions WHERE product_id=? ORDER BY id DESC', (product_id,))
+    return render_template('admin_store_edit.html', product=product, versions=versions, money_label=money_label)
+
+
+@app.route('/admin/store/<int:product_id>/version', methods=['POST'])
+@admin_required
+def admin_store_version(product_id):
+    product = query_one('SELECT * FROM store_products WHERE id=?', (product_id,))
+    if not product:
+        abort(404)
+    artifact = request.files.get('artifact')
+    version_label = request.form.get('version_label', '').strip()
+    release_notes = request.form.get('release_notes', '').strip()
+    if not version_label:
+        flash('Enter the new version label before uploading.', 'error')
+        return redirect(url_for('admin_store_edit', product_id=product_id))
+    stage = None; final_artifact = None; final_root = None
+    try:
+        stage, original, file_size, sha256 = stage_store_upload(artifact, product['kind'])
+        if product['kind'] == 'website' and Path(original).suffix.casefold() == '.zip':
+            generated_description = generate_website_explanation(stage)
+        else:
+            generated_description = ''
+        db = get_db()
+        db.execute('BEGIN')
+        cur = db.execute('''INSERT INTO store_versions(product_id,version_label,artifact_path,original_name,mime_type,file_size,sha256,release_notes,is_current,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?)''', (product_id,version_label,'PENDING',original,mimetypes.guess_type(original)[0] or ('application/vnd.android.package-archive' if product['kind']=='apk' else 'text/html'),file_size,sha256,release_notes,1,now_iso()))
+        version_id = cur.lastrowid
+        db.execute('UPDATE store_versions SET is_current=0 WHERE product_id=? AND id<>?', (product_id,version_id))
+        final_artifact, final_root, entry = finalize_store_artifact(stage, product['kind'], product_id, version_id)
+        stage = None
+        db.execute('UPDATE store_versions SET artifact_path=?, website_root=?, website_entry=? WHERE id=?', (final_artifact,final_root,entry if product['kind']=='website' else None,version_id))
+        db.execute('UPDATE store_products SET current_version_id=?, updated_at=? WHERE id=?', (version_id,now_iso(),product_id))
+        # Re-generation is useful when the admin left a website description blank.
+        if product['kind'] == 'website' and not (product['description'] or '').strip() and generated_description:
+            db.execute('UPDATE store_products SET description=? WHERE id=?', (generated_description,product_id))
+        db.commit()
+        flash(f'Version {version_label} is live. Existing orders keep their entitlement; downloads now use the latest release.', 'success')
+    except Exception as exc:
+        try: get_db().rollback()
+        except Exception: pass
+        if stage: Path(stage).unlink(missing_ok=True)
+        if final_artifact: (BASE_DIR / final_artifact).unlink(missing_ok=True)
+        if final_root and (BASE_DIR / final_root).exists(): shutil.rmtree(BASE_DIR / final_root, ignore_errors=True)
+        flash(f'The old release was kept because the new upload failed safely: {exc}', 'error')
+    return redirect(url_for('admin_store_edit', product_id=product_id))
+
+
+@app.route('/admin/store/orders/<int:order_id>/approve', methods=['POST'])
+@admin_required
+def admin_store_order_approve(order_id):
+    code = request.form.get('payment_code', '').strip().upper()
+    note = request.form.get('note', '').strip() or 'Manually approved by administrator.'
+    try:
+        changed = approve_store_order(order_id, code, now_iso(), None, note)
+        flash('Order approved and accounting entry recorded.' if changed else 'Order was already approved.', 'success')
+    except Exception as exc:
+        flash(f'Approval failed: {exc}', 'error')
+    return redirect(url_for('admin_store') + '#orders')
+
+
+@app.route('/admin/store/orders/<int:order_id>/reject', methods=['POST'])
+@admin_required
+def admin_store_order_reject(order_id):
+    note = request.form.get('note', '').strip() or 'Rejected by administrator.'
+    changed = reject_store_order(order_id, note)
+    flash('Order rejected. The original order and gateway receipts remain recorded.' if changed else 'An approved order cannot be rejected from this screen.', 'success' if changed else 'error')
+    return redirect(url_for('admin_store') + '#orders')
+
+
+@app.route('/api/admin/store/feed')
+@admin_required
+def admin_store_feed():
+    last_id = request.args.get('last_id', '0')
+    try: last_id = int(last_id)
+    except ValueError: last_id = 0
+    rows = query_all('SELECT * FROM payment_receipts WHERE id>? ORDER BY id ASC LIMIT 60', (last_id,))
+    return jsonify([dict(r) for r in rows])
 
 
 @app.route('/admin/users')
@@ -995,7 +2070,7 @@ def admin_backup_full():
         archive.writestr('backup_manifest.json', json.dumps({
             'product': 'Toror Technology Company Ltd',
             'created_at': now_iso(),
-            'contains': ['SQLite database', 'static uploaded assets'],
+            'contains': ['SQLite database', 'static uploaded assets, including APK releases and website packages', 'store orders, gateway receipts and accounting ledger'],
             'restore_note': 'Restore only through the private admin backup/restore screen.'
         }, indent=2))
     out.seek(0)
@@ -1356,6 +2431,47 @@ def vault_access(token):
 @app.route('/vault/<token>')
 def vault_access_alias(token):
     return vault_access(token)
+
+
+
+
+@app.route('/api/gateway/mpesa', methods=['POST', 'GET'])
+@app.route('/api/gateway/messages', methods=['POST', 'GET'])
+def payment_gateway_receiver():
+    # GET is a safe health check; POST is the listener contract.
+    configured = get_setting('store_gateway_secret', '')
+    if request.method == 'GET':
+        return jsonify({'ok': True, 'service': 'toror-payment-gateway', 'ready': bool(configured)})
+    supplied = request.headers.get('X-Toror-Gateway-Key', '').strip()
+    auth = request.headers.get('Authorization', '').strip()
+    if not supplied and auth.casefold().startswith('bearer '):
+        supplied = auth[7:].strip()
+    if not supplied:
+        supplied = request.args.get('token', '').strip()
+    if not configured or not supplied or not hmac.compare_digest(supplied, configured):
+        return jsonify({'ok': False, 'error': 'Unauthorized gateway request.'}), 401
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = request.form.to_dict(flat=True)
+    parsed = parse_gateway_payload(payload)
+    if not parsed['raw_message']:
+        return jsonify({'ok': False, 'error': 'A raw receipt message is required.'}), 400
+    # Idempotency: identical gateway id or transaction code is stored only once as a live receipt.
+    if parsed['transaction_code']:
+        existing = query_one('SELECT id,classification,matched_order_id FROM payment_receipts WHERE transaction_code=? LIMIT 1', (parsed['transaction_code'],))
+        if existing:
+            return jsonify({'ok': True, 'duplicate': True, 'receipt_id': existing['id'], 'classification': existing['classification'], 'order_id': existing['matched_order_id']})
+    if parsed['gateway_id']:
+        existing = query_one('SELECT id,classification,matched_order_id FROM payment_receipts WHERE gateway_id=? LIMIT 1', (parsed['gateway_id'],))
+        if existing:
+            return jsonify({'ok': True, 'duplicate': True, 'receipt_id': existing['id'], 'classification': existing['classification'], 'order_id': existing['matched_order_id']})
+    cur = execute('''INSERT INTO payment_receipts(received_at,gateway_id,sim_device,sender,payer_name,payer_phone,amount,transaction_code,raw_message,classification,delivery,created_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''', (parsed['received_at'],parsed['gateway_id'],parsed['sim_device'],parsed['sender'],parsed['payer_name'],parsed['payer_phone'],float(parsed['amount']) if parsed['amount'] is not None else None,parsed['transaction_code'],parsed['raw_message'],'M-PESA CANDIDATE',parsed['delivery'],now_iso()))
+    receipt_id = cur.lastrowid
+    order_id, reason = classify_gateway_payment(parsed, receipt_id)
+    if order_id:
+        return jsonify({'ok': True, 'receipt_id': receipt_id, 'classification': 'PAYMENT_MATCHED', 'order_id': order_id, 'message': reason}), 200
+    return jsonify({'ok': True, 'receipt_id': receipt_id, 'classification': query_one('SELECT classification FROM payment_receipts WHERE id=?',(receipt_id,))['classification'], 'message': reason}), 202
 
 
 @app.route('/api/admin/chat/read', methods=['POST'])
@@ -1858,7 +2974,7 @@ def robots():
 @app.route('/sitemap.xml')
 def sitemap():
     base = request.url_root.rstrip('/')
-    paths = ['/', '/about', '/services', '/work', '/faq', '/contact', '/privacy', '/terms', '/verify']
+    paths = ['/', '/about', '/services', '/work', '/store', '/faq', '/contact', '/privacy', '/terms', '/verify']
     xml = '<?xml version="1.0" encoding="UTF-8"?>' + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join(f'<url><loc>{base}{path}</loc></url>' for path in paths) + '</urlset>'
     return app.response_class(xml, mimetype='application/xml')
 

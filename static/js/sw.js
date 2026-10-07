@@ -1,7 +1,7 @@
-const CACHE = 'toror-tech-v8';
+const CACHE = 'toror-tech-v9';
 const ASSETS = [
   '/', '/about', '/services', '/work', '/faq', '/contact', '/privacy', '/terms', '/verify',
-  '/manifest.webmanifest', '/qr/home.png', '/static/css/style.css?v=8', '/static/js/app.js?v=8', '/static/default-logo.svg'
+  '/manifest.webmanifest', '/qr/home.png', '/static/css/style.css?v=9', '/static/js/app.js?v=9', '/static/default-logo.svg'
 ];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));

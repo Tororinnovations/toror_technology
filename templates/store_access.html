@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% set title = product.name ~ ' access · ' ~ site_name %}
+{% block content %}
+<section class="page-hero store-access-hero"><span class="eyebrow">Approved access</span><h1>{{ product.name }}</h1><p>Payment and access have been approved. The store will serve the latest release, including future releases you are entitled to receive.</p></section>
+<section class="content-section access-grid">
+  <div class="card access-main"><div class="access-icon">{{ 'A' if product.kind == 'apk' else 'W' }}</div><span class="badge">{{ product.kind|upper }}</span><h2>Release {{ version.version_label or '—' }}</h2><p class="muted">{{ product.description }}</p><div class="store-info-callout"><strong>Instructions</strong><span>{{ product.access_instructions or 'No extra instructions were supplied. Use the button below to continue.' }}</span></div>{% if product.kind == 'apk' %}<a class="btn primary store-buy-button" href="/store/download/{{ item.access_token }}">Download latest APK</a><p class="field-help">The download endpoint always follows the product's current release, so later approved releases are available from the same access link.</p>{% else %}<a class="btn primary store-buy-button" href="/store/site/{{ item.access_token }}/" target="_blank" rel="noopener">Open website</a><p class="field-help">The uploaded site is served from a sandboxed static viewer for isolation from the Toror admin/public application.</p>{% endif %}</div>
+  <aside class="card access-side"><span class="section-kicker">Access token</span><code class="access-token">{{ item.access_token }}</code><p class="muted">Keep this link private. Anyone with the link may be able to access this approved product.</p><a class="text-link" href="/store">Browse more products →</a></aside>
+</section>
+{% endblock %}

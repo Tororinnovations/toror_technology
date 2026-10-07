@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+{% set title = 'Manage ' ~ product.name ~ ' · ' ~ site_name %}
+{% block content %}
+<section class="section">
+  <div class="section-head"><div><span class="section-kicker">Store product</span><h3>Manage {{ product.name }}</h3><p class="muted">Edit the public details and payment switches separately from release uploads.</p></div><a class="btn" href="/admin/store">← Back to store</a></div>
+  <div class="store-edit-grid">
+    <form class="card form-card" method="post" enctype="multipart/form-data">
+      <input type="hidden" name="action" value="details">
+      <div class="form-grid"><div class="field"><label>Name</label><input name="name" value="{{ product.name }}" required></div><div class="field"><label>Price (KES)</label><input name="price" type="number" min="0" step="0.01" value="{{ product.price_kes }}"></div></div>
+      <div class="field"><label>Short description</label><input name="short_description" value="{{ product.short_description or '' }}"></div>
+      <div class="field"><label>Description</label><textarea name="description" rows="8" required>{{ product.description }}</textarea></div>
+      <div class="field"><label>Instructions shown after approval</label><textarea name="access_instructions" rows="7">{{ product.access_instructions or '' }}</textarea></div>
+      <div class="field"><label>Replace icon (optional)</label><input name="icon" type="file" accept=".png,.jpg,.jpeg,.webp,.svg"></div>
+      <div class="store-toggle-row">
+        <label class="store-check"><input type="checkbox" name="payment_required" value="1" {% if product.payment_required %}checked{% endif %}><span><strong>Require payment</strong><small>Exact price match is required before access.</small></span></label>
+        <label class="store-check"><input type="checkbox" name="premium_enabled" value="1" {% if product.premium_enabled %}checked{% endif %}><span><strong>Premium mode</strong><small>Keep the premium switch available for this product.</small></span></label>
+        <label class="store-check"><input type="checkbox" name="active" value="1" {% if product.active %}checked{% endif %}><span><strong>Published</strong><small>Uncheck to hide from the public store without deleting anything.</small></span></label>
+      </div>
+      <div class="actions-inline"><button class="btn primary" type="submit">Save product settings</button></div>
+    </form>
+    <form class="card form-card archive-form" method="post" action="/admin/store/{{ product.id }}/edit" onsubmit="return confirm('Archive this product? Existing releases, orders and accounting records will be kept.');"><input type="hidden" name="action" value="archive"><strong>Archive without deleting</strong><p class="muted">This only removes the product from the public catalog. Approved buyers keep their access records and release history.</p><button class="btn" type="submit">Archive product</button></form>
+
+    <div class="card form-card">
+      <span class="section-kicker">Release-safe upload</span><h3>Upload a new {{ product.kind|upper }} release</h3>
+      <p class="muted">The current release is never deleted first. The new file is validated and committed as a new version; if anything fails, the old release stays live.</p>
+      <form method="post" enctype="multipart/form-data">
+        <div class="field"><label>New version</label><input name="version_label" placeholder="1.1.0" required></div>
+        <div class="field"><label>Release notes</label><textarea name="release_notes" rows="5" placeholder="What changed in this version?"></textarea></div>
+        <div class="field"><label>New release file</label><input name="artifact" type="file" accept=".apk,.zip,.html,.htm" required></div>
+        <button class="btn primary" type="submit">Upload & make this release live</button>
+      </form>
+      <div class="store-version-history"><strong>Release history</strong>{% for version in versions %}<div class="store-history-row {% if version.id == product.current_version_id %}current{% endif %}"><div><b>{{ version.version_label }}</b>{% if version.id == product.current_version_id %}<span class="badge">CURRENT</span>{% endif %}<span class="table-sub">{{ version.original_name }} · {{ version.created_at[:19].replace('T',' ') }}</span></div><code>{{ (version.sha256 or '')[:18] }}{% if version.sha256 %}…{% endif %}</code></div>{% else %}<span class="muted">No releases.</span>{% endfor %}</div>
+    </div>
+  </div>
+</section>
+{% endblock %}

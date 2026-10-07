@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% set title = ('Cart' if cart else 'Checkout') ~ ' · ' ~ site_name %}
+{% block content %}
+<section class="page-hero store-checkout-hero"><span class="eyebrow">{{ 'Your cart' if cart else 'Secure checkout' }}</span><h1>{{ 'Review your products.' if cart else 'Enter the payment details exactly.' }}</h1><p>{% if cart %}Your digital items are reserved for checkout only after the order is created. No payment has been taken yet.{% else %}For a paid order, enter the buyer name exactly as it appears on the phone sending the payment, the same phone number, and the exact amount.{% endif %}</p></section>
+<section class="content-section checkout-grid">
+  <div class="checkout-items card">
+    <span class="section-kicker">Order items</span><h2>{{ products|length }} product{{ '' if products|length == 1 else 's' }}</h2>
+    {% for product in products %}<div class="checkout-item"><div><strong>{{ product.name }}</strong><span>{{ product.kind|title }}{% if product.version_label %} · {{ product.version_label }}{% endif %}</span></div><strong>{% if product.payment_required and product.price_kes > 0 %}KES {{ '%.2f'|format(product.price_kes) }}{% else %}Free{% endif %}</strong>{% if cart %}<form method="post" action="/store/cart/remove/{{ product.id }}"><button class="icon-remove" type="submit" aria-label="Remove {{ product.name }}">×</button></form>{% endif %}</div>{% endfor %}
+    <div class="checkout-total"><span>Total to pay</span><strong>KES {{ '%.2f'|format(cart_total) }}</strong></div>
+    {% if cart %}<a class="btn" href="/store">← Continue shopping</a>{% endif %}
+  </div>
+  {% if cart %}
+    <div class="checkout-actions card"><span class="section-kicker">Next step</span><h3>Ready to check out?</h3><p class="muted">You will enter the buyer name, phone and exact payment amount on the next page.</p><a class="btn primary" href="/store/checkout">Continue to payment details</a></div>
+  {% else %}
+    <form class="checkout-payment card form-card" method="post">
+      <span class="section-kicker">Buyer & payment</span><h3>{% if cart_total > 0 %}Payment will remain pending until matched{% else %}Free access{% endif %}</h3>
+      <div class="field"><label>Name exactly as the paying number's M-PESA name</label><input name="buyer_name" autocomplete="name" required></div>
+      <div class="field"><label>Phone number used for payment</label><input name="buyer_phone" inputmode="tel" autocomplete="tel" placeholder="07xx xxx xxx or 2547xx xxx xxx" required></div>
+      <div class="field"><label>Email (optional)</label><input name="buyer_email" type="email" autocomplete="email"></div>
+      {% if cart_total > 0 %}<div class="field"><label>Amount you will pay</label><input name="amount" type="number" min="0" step="0.01" value="{{ '%.2f'|format(cart_total) }}" required><small>Exact amount required: <strong>KES {{ '%.2f'|format(cart_total) }}</strong>. Underpayment, overpayment or another amount stays outside automatic approval.</small></div>{% else %}<input type="hidden" name="amount" value="0">{% endif %}
+      {% if cart_total > 0 %}<div class="payment-instructions"><span class="section-kicker">Where to pay</span><pre>{{ store_settings.payment_instructions }}</pre></div>{% endif %}
+      <button class="btn primary store-buy-button" type="submit">{% if cart_total > 0 %}Create pending order{% else %}Create free access{% endif %}</button>
+    </form>
+  {% endif %}
+</section>
+{% endblock %}

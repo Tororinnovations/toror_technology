@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% set title = 'Apps & Sites · ' ~ site_name %}
+{% block content %}
+<section class="page-hero store-public-hero"><span class="eyebrow">Toror Apps & Sites</span><h1>A small store for real digital products.</h1><p>Download Toror applications or open uploaded websites after access is approved. Paid items remain pending until the payment gateway confirms the matching M-PESA receipt.</p><div class="cta-row"><a class="btn primary" href="#catalog">Browse products</a><a class="btn" href="/store/cart">Cart{% if store_cart_count %} · {{ store_cart_count }}{% endif %}</a></div></section>
+<section class="content-section" id="catalog">
+  <div class="section-heading"><div><span class="section-kicker">Catalog</span><h2>Apps, websites & premium products.</h2></div><a class="btn" href="/store/cart">Open cart{% if store_cart_count %} ({{ store_cart_count }}){% endif %}</a></div>
+  <div class="store-grid">
+    {% for product in products %}
+    <article class="store-card {% if product.premium_enabled %}premium-card{% endif %}">
+      <div class="store-card-icon">{% if product.icon_path %}<img src="{{ product.icon_path }}" alt="">{% else %}<span>{{ 'A' if product.kind == 'apk' else 'W' }}</span>{% endif %}</div>
+      <div class="store-card-body"><div class="store-card-tags"><span class="badge">{{ product.kind|title }}</span>{% if product.premium_enabled %}<span class="badge premium-badge">Premium</span>{% endif %}</div><h3>{{ product.name }}</h3><p>{{ product.short_description or product.description }}</p></div>
+      <div class="store-card-footer"><strong>{% if product.payment_required and product.price_kes > 0 %}{{ 'KES %.2f'|format(product.price_kes) }}{% else %}Free{% endif %}</strong><a class="btn primary" href="/store/product/{{ product.slug }}">View details</a></div>
+    </article>
+    {% else %}<article class="store-empty"><span class="section-kicker">Coming soon</span><h3>No digital products are published yet.</h3><p>New Toror apps and uploaded websites will appear here automatically when the administrator publishes them.</p></article>{% endfor %}
+  </div>
+</section>
+<section class="content-section cta-panel store-safety-panel"><div><span class="section-kicker">Payment & access</span><h2>No payment is treated as complete until the gateway or administrator approves it.</h2><p>Paid orders are matched using the buyer name, phone number and exact amount, then kept in the accounting ledger.</p></div><a class="btn primary" href="/store/cart">View cart</a></section>
+{% endblock %}

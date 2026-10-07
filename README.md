@@ -79,3 +79,18 @@ gunicorn app:app
 ```
 
 SQLite is used by default in `data/toror.db`. The existing database is retained and upgraded automatically for new certificate issuer and backup-related functionality. Public CSS, JavaScript and service-worker assets are versioned so mobile browsers receive the latest UI instead of an old cached colour scheme.
+
+## Apps & Sites Store
+
+Admin → **Apps & Sites Store** now provides a small first-party product store for Toror APKs and uploaded static website packages. Product records, release history, purchase orders, gateway receipts and accounting entries are stored in SQLite. Uploaded APKs and website packages live under `static/uploads/store/`, so the existing **full system backup** includes them.
+
+Paid checkout requires the buyer name, the paying phone number and the exact amount. The listener/API gateway can POST M-PESA receipt data to the endpoint displayed inside the store admin. Automatic approval is only performed when one pending order matches on normalized name, normalized Kenyan phone number, exact amount and the configured time window. Unmatched and ambiguous receipts remain recorded for manual review.
+APK download analytics are retained in SQLite as well: the admin can see total downloads, unique APK downloaders, the APK/version downloaded, buyer name, phone/email, time, and whether each download was an initial download, update, or re-download. This measures downloads, not guaranteed installations; Android installation completion is controlled by the device/app.
+
+### Listener endpoint
+
+The canonical receiver is `/api/gateway/mpesa` and `/api/gateway/messages` is an alias. Configure the shared secret in Admin → Apps & Sites Store and send it as `X-Toror-Gateway-Key` or `Authorization: Bearer ...`. A receipt POST may include structured fields such as `payer_name`, `payer_phone`, `amount`, `transaction_code`, `gateway_id`, `received_at`, `sim_device`, `sender`, `delivery`, and `raw_message`; the server can also extract common M-PESA fields from the raw message.
+
+### Release updates
+
+Re-uploading an APK or website never deletes the currently live release first. A new release is validated, stored as its own version, and only then made current. Existing approved access links follow the latest release. The API endpoint `/api/store/apk/<slug>/update-check` exposes the current version and, for an entitled buyer, a latest-download URL. Normal Android devices still require the installed app to check this endpoint and follow Android's installation/update rules; a normal website server cannot silently install an APK on every phone.

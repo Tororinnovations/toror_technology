@@ -1,0 +1,192 @@
+{% extends 'base.html' %}
+{% set title = 'Apps & Sites Store · ' ~ site_name %}
+{% block content %}
+<section class="section store-admin-hero">
+  <div class="store-hero-copy">
+    <span class="section-kicker">Product command centre</span>
+    <h3>Apps, websites, payments & releases</h3>
+    <p class="muted">Publish an APK or uploaded website package, choose whether payment is required, update releases without deleting the previous release, and monitor M-PESA approvals from one place.</p>
+  </div>
+  <div class="store-admin-metrics">
+    <div class="store-metric"><span>Products</span><strong>{{ products|length }}</strong></div>
+    <div class="store-metric"><span>Pending orders</span><strong>{{ orders|selectattr('status','equalto','pending')|list|length }}</strong></div>
+    <div class="store-metric"><span>Income recorded</span><strong>{{ money_label(total_income) }}</strong></div>
+    <div class="store-metric"><span>APK downloads</span><strong>{{ download_stats.total or 0 }}</strong></div>
+    <div class="store-metric"><span>Unique APK downloaders</span><strong>{{ download_stats.unique_downloaders or 0 }}</strong></div>
+  </div>
+</section>
+
+<section class="section" id="publish">
+  <div class="section-head"><div><span class="section-kicker">Publish a product</span><h3>Upload an APK or website</h3><p class="muted">The first upload becomes release 1.0.0 unless you set another version. Failed uploads never replace an existing release.</p></div></div>
+  <form class="card form-card store-publish-form" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="action" value="create_product">
+    <div class="form-grid">
+      <div class="field"><label>Product name</label><input name="name" placeholder="e.g. Toror Music" required></div>
+      <div class="field"><label>Product type</label><select name="kind"><option value="apk">Android APK</option><option value="website">Website / web system</option></select></div>
+      <div class="field"><label>Version</label><input name="version_label" value="1.0.0" placeholder="1.0.0" required></div>
+      <div class="field"><label>Price (KES)</label><input name="price" type="number" min="0" step="0.01" value="0"></div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Short description</label><input name="short_description" placeholder="One-line store card description"></div>
+      <div class="field"><label>Product icon (optional)</label><input name="icon" type="file" accept=".png,.jpg,.jpeg,.webp,.svg"></div>
+    </div>
+    <div class="store-toggle-row">
+      <label class="store-check"><input type="checkbox" name="payment_required" value="1"><span><strong>Require payment</strong><small>Use this for paid buttons. The checkout will demand the exact amount.</small></span></label>
+      <label class="store-check"><input type="checkbox" name="premium_enabled" value="1"><span><strong>Premium mode</strong><small>Mark this product as premium and keep its switch available for future premium controls.</small></span></label>
+      <label class="store-check"><input type="checkbox" name="active" value="1" checked><span><strong>Publish now</strong><small>Visible on the public landing page and storefront.</small></span></label>
+    </div>
+    <div class="field"><label>Description</label><textarea name="description" rows="6" placeholder="For websites, leave blank and the system will generate an explanation from the uploaded package. You can edit it afterwards."></textarea></div>
+    <div class="field"><label>Instructions after approval</label><textarea name="access_instructions" rows="5" placeholder="What the buyer should know after payment is approved: how to install the APK, login details, how to open the website, support instructions, etc."></textarea></div>
+    <div class="form-grid">
+      <div class="field"><label>Release notes</label><textarea name="release_notes" rows="4" placeholder="What changed in this release"></textarea></div>
+      <div class="field"><label>APK / website release file</label><input name="artifact" type="file" accept=".apk,.zip,.html,.htm" required><small>APKs are integrity-checked. Website ZIPs are path-checked, safely extracted, and served as static sandboxed sites.</small></div>
+    </div>
+    <button class="btn primary" type="submit">Publish to store</button>
+  </form>
+</section>
+
+<section class="section" id="products">
+  <div class="section-head"><div><span class="section-kicker">Catalog</span><h3>Published & archived products</h3></div><a class="btn small" href="/store" target="_blank">View public store</a></div>
+  <div class="store-admin-product-grid">
+    {% for product in products %}
+      <article class="card store-admin-product {% if not product.active %}is-archived{% endif %}">
+        <div class="store-product-top">
+          <div class="store-product-icon">{% if product.icon_path %}<img src="{{ product.icon_path }}" alt="">{% else %}{{ 'A' if product.kind == 'apk' else 'W' }}{% endif %}</div>
+          <div class="store-product-title"><span class="badge">{{ product.kind|upper }}{% if product.premium_enabled %} · PREMIUM{% endif %}</span><h3>{{ product.name }}</h3><span class="muted">/{{ product.slug }}</span></div>
+          <div class="store-product-price">{% if product.payment_required and product.price_kes > 0 %}{{ money_label(product.price_kes) }}{% else %}<strong>FREE</strong>{% endif %}</div>
+        </div>
+        <p>{{ product.short_description or product.description }}</p>
+        {% if product.description and product.short_description %}<div class="store-description-preview">{{ product.description }}</div>{% endif %}
+        <div class="store-version-box"><div><span>Current release</span><strong>{{ product.version_label or '—' }}</strong></div><div><span>File</span><strong>{{ product.version_original_name or '—' }}</strong></div><div><span>Status</span><strong>{{ 'Published' if product.active else 'Archived' }}</strong></div></div>
+        <div class="actions-inline store-actions">
+          <a class="btn" href="/admin/store/{{ product.id }}/edit">Manage</a>
+          {% if product.active %}<a class="btn" href="/store/product/{{ product.slug }}" target="_blank">Preview</a>{% endif %}
+        </div>
+      </article>
+    {% else %}
+      <article class="card"><h3>Nothing published yet</h3><p class="muted">Use the publisher above to make your first APK or website available.</p></article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="section" id="downloads">
+  <div class="section-head"><div><span class="section-kicker">Growth analytics</span><h3>APK downloads & users</h3><p class="muted">Every served APK download is tied to the buyer/order. This shows total downloads, unique downloaders, repeat downloads and who downloaded which release.</p></div></div>
+  <div class="store-download-product-grid">
+    {% for row in download_products if row.kind == 'apk' %}
+      <article class="card store-download-product-card">
+        <div><span class="badge">APK</span><h3>{{ row.name }}</h3></div>
+        <div class="store-version-box"><div><span>Total downloads</span><strong>{{ row.download_count }}</strong></div><div><span>Unique users</span><strong>{{ row.unique_downloaders }}</strong></div><div><span>Last download</span><strong>{{ (row.last_downloaded_at or '—')[:19].replace('T',' ') }}</strong></div></div>
+        <a class="text-link" href="#downloaders">See downloader history →</a>
+      </article>
+    {% else %}
+      <article class="card"><h3>No APK downloads yet</h3><p class="muted">As soon as buyers download an APK, the users and release history will appear here.</p></article>
+    {% endfor %}
+  </div>
+  <div class="card table-card" id="downloaders"><table class="table compact"><thead><tr><th>Date</th><th>APK</th><th>Buyer</th><th>Phone</th><th>Email</th><th>Version</th><th>Type</th><th>Order</th></tr></thead><tbody>
+    {% for d in recent_downloads %}{% if d.kind == 'apk' %}<tr><td>{{ d.downloaded_at[:19].replace('T',' ') }}</td><td><strong>{{ d.product_name_snapshot }}</strong></td><td>{{ d.buyer_name }}</td><td>{{ d.buyer_phone }}</td><td>{{ d.buyer_email or '—' }}</td><td>{{ d.version_label }}</td><td><span class="badge">{{ d.download_kind|title }}</span></td><td>{{ d.order_code }}</td></tr>{% endif %}{% else %}<tr><td colspan="8">No APK download records yet.</td></tr>{% endfor %}
+  </tbody></table><p class="field-help">“Download” means the server successfully authorized and started serving the APK. It cannot prove the Android installation completed; the installed app can use the store update-check endpoint for release checks.</p></div>
+</section>
+
+<section class="section" id="orders">
+  <div class="section-head"><div><span class="section-kicker">Money & access</span><h3>Orders & payment approvals</h3><p class="muted">Exact-match orders are approved automatically. Anything unmatched or ambiguous remains visible here for manual review.</p></div></div>
+  <div class="card table-card">
+    <table class="table compact"><thead><tr><th>Order</th><th>Buyer</th><th>Items</th><th>Amount</th><th>Status</th><th>Payment code</th><th>Action</th></tr></thead><tbody>
+      {% for order in orders %}
+      <tr>
+        <td><strong>{{ order.order_code }}</strong><span class="table-sub">{{ order.created_at[:19].replace('T',' ') }}</span></td>
+        <td>{{ order.buyer_name }}<span class="table-sub">{{ order.buyer_phone }}</span></td>
+        <td>{{ order.item_names or '—' }}</td>
+        <td>{{ money_label(order.amount_expected) }}</td>
+        <td><span class="badge status-{{ order.status }}">{{ order.status|replace('_',' ')|title }}</span></td>
+        <td>{{ order.payment_code or '—' }}</td>
+        <td>{% if order.status == 'pending' %}<div class="actions-inline"><form method="post" action="/admin/store/orders/{{ order.id }}/approve" class="manual-approve-form"><input name="payment_code" placeholder="M-PESA code (optional)"><button class="btn small primary" type="submit">Manual approve</button></form><form method="post" action="/admin/store/orders/{{ order.id }}/reject"><button class="btn small" type="submit">Reject</button></form></div>{% else %}<span class="muted">Recorded</span>{% endif %}</td>
+      </tr>
+      {% else %}<tr><td colspan="7">No orders yet.</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+</section>
+
+<section class="section" id="gateway">
+  <div class="section-head"><div><span class="section-kicker">M-PESA listener bridge</span><h3>API gateway & live receipt stream</h3><p class="muted">Point the phone/listener app here. Every receipt is stored before matching, so unmatched messages are not lost.</p></div></div>
+  <div class="gateway-admin-grid">
+    <form class="card form-card" method="post">
+      <input type="hidden" name="action" value="settings">
+      <div class="field"><label>Gateway endpoint</label><div class="copy-field"><input id="gateway-url" value="{{ gateway_url }}" readonly><button type="button" class="btn small" data-copy-target="gateway-url">Copy</button></div><small>Use this exact URL in the listener app. The /api/gateway/messages alias points to the same receiver.</small></div>
+      <div class="field"><label>Gateway shared secret</label><input name="store_gateway_secret" type="password" value="" placeholder="{% if store_settings.gateway_secret %}Leave blank to keep the current secret{% else %}Set the same secret in the listener app{% endif %}"><small>{% if store_settings.gateway_secret %}<strong>A gateway secret is already configured.</strong> Leave this blank unless you want to replace it.{% else %}No gateway secret is configured yet. Set the same secret in the listener app.{% endif %} Listener may send X-Toror-Gateway-Key or Authorization: Bearer &lt;secret&gt;.</small></div>
+      <div class="field"><label>Payment instructions shown to buyers</label><textarea name="store_payment_instructions" rows="7" placeholder="Example: M-PESA → Buy Goods and Services → Till 123456 → Business name Toror Technology Company Ltd">{{ store_settings.payment_instructions }}</textarea></div>
+      <div class="field"><label>Match window (hours)</label><input name="store_match_window_hours" type="number" min="1" max="168" value="{{ store_settings.match_window_hours }}"><small>Receipt must be for a pending order created within this window; name, phone and amount must still match exactly.</small></div>
+      <button class="btn primary" type="submit">Save gateway settings</button>
+    </form>
+    <div class="card gateway-contract">
+      <span class="section-kicker">Listener payload</span><h3>What the listening app should send</h3>
+      <pre id="gateway-contract">POST {{ gateway_url }}
+X-Toror-Gateway-Key: YOUR_SECRET
+Content-Type: application/json
+
+{
+  "gateway_id": "DENMART-GW-...",
+  "sim_device": "SIM 1",
+  "sender": "M-PESA",
+  "received_at": "2026-10-07T12:05:00+00:00",
+  "payer_name": "JOHN DOE",
+  "payer_phone": "254712345678",
+  "amount": 1000,
+  "transaction_code": "UJ40P8ABCD",
+  "raw_message": "Full M-PESA SMS text here",
+  "delivery": "RECEIVED"
+}</pre>
+      <button type="button" class="btn small" data-copy-block="gateway-contract">Copy payload example</button>
+      <p class="field-help">The receiver also accepts flexible JSON/form field names and can extract amount, payer phone, payer name and transaction code from a normal M-PESA receipt when structured fields are missing.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="receipts">
+  <div class="section-head"><div><span class="section-kicker">Live audit trail</span><h3>Server receipt stream <span class="live-dot">● LISTENING</span></h3><p class="muted">Newest messages appear automatically while this page is open.</p></div></div>
+  <div class="card table-card">
+    <table class="table compact receipt-table"><thead><tr><th>Received</th><th>SIM / device</th><th>Sender</th><th>Classification</th><th>Delivery</th><th>Message</th></tr></thead><tbody id="receipt-feed" data-last-id="{{ receipts[0].id if receipts else 0 }}">
+      {% for r in receipts|reverse %}
+      <tr><td>{{ r.received_at }}</td><td>{{ r.sim_device or '—' }}</td><td>{{ r.sender or '—' }}</td><td><span class="badge receipt-{{ r.classification|lower|replace(' ','-') }}">{{ r.classification }}</span>{% if r.match_reason %}<span class="table-sub">{{ r.match_reason }}</span>{% endif %}</td><td>{{ r.delivery or '—' }}</td><td class="receipt-message">{{ r.raw_message }}</td></tr>
+      {% else %}<tr><td colspan="6">No gateway receipts received yet.</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+</section>
+
+<section class="section" id="accounting">
+  <div class="section-head"><div><span class="section-kicker">Ledger</span><h3>Store accounting</h3><p class="muted">Approved paid items create one ledger entry per order item, while the original receipt and order remain linked.</p></div></div>
+  <div class="card table-card"><table class="table compact"><thead><tr><th>Date</th><th>Order</th><th>Product</th><th>Reference</th><th>Amount</th><th>Memo</th></tr></thead><tbody>
+    {% for row in ledger %}<tr><td>{{ row.created_at[:19].replace('T',' ') }}</td><td>{{ row.order_code or '—' }}</td><td>{{ row.product_name or '—' }}</td><td>{{ row.reference or '—' }}</td><td>{{ money_label(row.amount) }}</td><td>{{ row.memo or 'Sale' }}</td></tr>
+    {% else %}<tr><td colspan="6">No income entries yet.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+<script>
+(() => {
+  const copy = async (value) => { try { await navigator.clipboard.writeText(value); } catch (_) {} };
+  document.querySelectorAll('[data-copy-target]').forEach(btn => btn.addEventListener('click', () => copy(document.getElementById(btn.dataset.copyTarget)?.value || '')));
+  document.querySelectorAll('[data-copy-block]').forEach(btn => btn.addEventListener('click', () => copy(document.getElementById(btn.dataset.copyBlock)?.textContent || '')));
+  const feed = document.getElementById('receipt-feed');
+  if (!feed) return;
+  let lastId = parseInt(feed.dataset.lastId || '0', 10);
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+  async function poll(){
+    try {
+      const res = await fetch('/api/admin/store/feed?last_id=' + lastId, {cache:'no-store'});
+      if (res.ok) {
+        const rows = await res.json();
+        rows.forEach(r => {
+          lastId = Math.max(lastId, Number(r.id));
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${esc(r.received_at)}</td><td>${esc(r.sim_device || '—')}</td><td>${esc(r.sender || '—')}</td><td><span class="badge">${esc(r.classification)}</span>${r.match_reason ? `<span class="table-sub">${esc(r.match_reason)}</span>` : ''}</td><td>${esc(r.delivery || '—')}</td><td class="receipt-message">${esc(r.raw_message)}</td>`;
+          feed.appendChild(tr);
+        });
+        while (feed.rows.length > 60) feed.deleteRow(0);
+        feed.dataset.lastId = String(lastId);
+      }
+    } catch (_) {}
+    setTimeout(poll, 4000);
+  }
+  poll();
+})();
+</script>
+{% endblock %}
