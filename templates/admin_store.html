@@ -5,7 +5,7 @@
   <div class="store-hero-copy">
     <span class="section-kicker">Product command centre</span>
     <h3>Apps, websites, payments & releases</h3>
-    <p class="muted">Publish an APK or uploaded website package, choose whether payment is required, update releases without deleting the previous release, and monitor M-PESA approvals from one place.</p>
+    <p class="muted">Publish APKs, add live website links, choose payment and premium switches, update releases safely, and monitor M-PESA approvals from one place.</p>
   </div>
   <div class="store-admin-metrics">
     <div class="store-metric"><span>Products</span><strong>{{ products|length }}</strong></div>
@@ -17,12 +17,13 @@
 </section>
 
 <section class="section" id="publish">
-  <div class="section-head"><div><span class="section-kicker">Publish a product</span><h3>Upload an APK or website</h3><p class="muted">The first upload becomes release 1.0.0 unless you set another version. Failed uploads never replace an existing release.</p></div></div>
+  <div class="section-head"><div><span class="section-kicker">Publish a product</span><h3>Publish an APK or website link</h3><p class="muted">The first upload becomes release 1.0.0 unless you set another version. Failed uploads never replace an existing release.</p></div></div>
   <form class="card form-card store-publish-form" method="post" enctype="multipart/form-data">
     <input type="hidden" name="action" value="create_product">
     <div class="form-grid">
       <div class="field"><label>Product name</label><input name="name" placeholder="e.g. Toror Music" required></div>
-      <div class="field"><label>Product type</label><select name="kind"><option value="apk">Android APK</option><option value="website">Website / web system</option></select></div>
+      <div class="field"><label>Product type</label><select name="kind" id="publish-kind"><option value="apk">Android APK</option><option value="website">Website link</option></select></div>
+      <div class="field"><label>Topic / category</label><input name="category" list="store-topic-list" placeholder="Music, Business, Travel..."><datalist id="store-topic-list"><option value="Music"><option value="Business"><option value="Travel"><option value="Education"><option value="Tools"><option value="Entertainment"><option value="Other"></datalist></div>
       <div class="field"><label>Version</label><input name="version_label" value="1.0.0" placeholder="1.0.0" required></div>
       <div class="field"><label>Price (KES)</label><input name="price" type="number" min="0" step="0.01" value="0"></div>
     </div>
@@ -35,15 +36,25 @@
       <label class="store-check"><input type="checkbox" name="premium_enabled" value="1"><span><strong>Premium mode</strong><small>Mark this product as premium and keep its switch available for future premium controls.</small></span></label>
       <label class="store-check"><input type="checkbox" name="active" value="1" checked><span><strong>Publish now</strong><small>Visible on the public landing page and storefront.</small></span></label>
     </div>
-    <div class="field"><label>Description</label><textarea name="description" rows="6" placeholder="For websites, leave blank and the system will generate an explanation from the uploaded package. You can edit it afterwards."></textarea></div>
+    <div class="field"><label>Description / caption</label><textarea name="description" rows="6" placeholder="What the app or website is, what it does, and why a user would use it."></textarea></div>
     <div class="field"><label>Instructions after approval</label><textarea name="access_instructions" rows="5" placeholder="What the buyer should know after payment is approved: how to install the APK, login details, how to open the website, support instructions, etc."></textarea></div>
     <div class="form-grid">
       <div class="field"><label>Release notes</label><textarea name="release_notes" rows="4" placeholder="What changed in this release"></textarea></div>
-      <div class="field"><label>APK / website release file</label><input name="artifact" type="file" accept=".apk,.zip,.html,.htm" required><small>APKs are integrity-checked. Website ZIPs are path-checked, safely extracted, and served as static sandboxed sites.</small></div>
+      <div class="field" id="apk-publish-file"><label>APK release file</label><input name="artifact" type="file" accept=".apk"><small>APKs are integrity-checked before they can become the live release.</small></div>
+      <div class="field" id="website-publish-url" hidden><label>Website URL</label><input name="website_url" type="url" placeholder="https://example.com"><small>Websites are links, not uploads. The store keeps the link and opens the live site.</small></div>
     </div>
     <button class="btn primary" type="submit">Publish to store</button>
   </form>
 </section>
+<script>
+(() => {
+  const kind = document.getElementById('publish-kind');
+  const file = document.getElementById('apk-publish-file');
+  const site = document.getElementById('website-publish-url');
+  function sync(){ const website = kind.value === 'website'; file.hidden = website; site.hidden = !website; file.querySelector('input').required = !website; site.querySelector('input').required = website; }
+  kind.addEventListener('change', sync); sync();
+})();
+</script>
 
 <section class="section" id="products">
   <div class="section-head"><div><span class="section-kicker">Catalog</span><h3>Published & archived products</h3></div><a class="btn small" href="/store" target="_blank">View public store</a></div>
@@ -57,7 +68,7 @@
         </div>
         <p>{{ product.short_description or product.description }}</p>
         {% if product.description and product.short_description %}<div class="store-description-preview">{{ product.description }}</div>{% endif %}
-        <div class="store-version-box"><div><span>Current release</span><strong>{{ product.version_label or '—' }}</strong></div><div><span>File</span><strong>{{ product.version_original_name or '—' }}</strong></div><div><span>Status</span><strong>{{ 'Published' if product.active else 'Archived' }}</strong></div></div>
+        <div class="store-version-box"><div><span>Current release</span><strong>{{ product.version_label or '—' }}</strong></div><div><span>{% if product.kind == 'website' %}Live URL{% else %}APK file{% endif %}</span><strong>{{ product.version_original_name or '—' }}</strong></div><div><span>Status</span><strong>{{ 'Published' if product.active else 'Archived' }}</strong></div></div>
         <div class="actions-inline store-actions">
           <a class="btn" href="/admin/store/{{ product.id }}/edit">Manage</a>
           {% if product.active %}<a class="btn" href="/store/product/{{ product.slug }}" target="_blank">Preview</a>{% endif %}

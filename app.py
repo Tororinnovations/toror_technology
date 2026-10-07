@@ -191,6 +191,7 @@ def init_db():
         slug TEXT NOT NULL UNIQUE,
         kind TEXT NOT NULL DEFAULT 'apk',
         short_description TEXT,
+        category TEXT NOT NULL DEFAULT 'Other',
         description TEXT NOT NULL,
         price_kes REAL NOT NULL DEFAULT 0,
         payment_required INTEGER NOT NULL DEFAULT 0,
@@ -212,6 +213,7 @@ def init_db():
         file_size INTEGER NOT NULL DEFAULT 0,
         sha256 TEXT,
         release_notes TEXT,
+        external_url TEXT,
         website_root TEXT,
         website_entry TEXT,
         is_current INTEGER NOT NULL DEFAULT 1,
@@ -416,6 +418,12 @@ def init_db():
             if name not in contact_cols:
                 db.execute(sql)
         cert_cols = {row['name'] for row in db.execute('PRAGMA table_info(certificates)')}
+        store_product_cols = {row['name'] for row in db.execute('PRAGMA table_info(store_products)')}
+        if 'category' not in store_product_cols:
+            db.execute("ALTER TABLE store_products ADD COLUMN category TEXT NOT NULL DEFAULT 'Other'")
+        store_version_cols = {row['name'] for row in db.execute('PRAGMA table_info(store_versions)')}
+        if 'external_url' not in store_version_cols:
+            db.execute('ALTER TABLE store_versions ADD COLUMN external_url TEXT')
         for name, sql in {
             'issuer_name': 'ALTER TABLE certificates ADD COLUMN issuer_name TEXT',
             'issuer_title': 'ALTER TABLE certificates ADD COLUMN issuer_title TEXT',
@@ -663,6 +671,17 @@ def normalize_phone(value):
     if len(digits) == 10 and digits[:2] in {'07', '01'}:
         return digits
     return digits
+
+
+def normalize_external_url(value):
+    raw = (value or '').strip()
+    if not raw:
+        return ''
+    if not re.match(r'^https?://', raw, re.I):
+        raise ValueError('Website link must start with http:// or https://')
+    if any(ord(ch) < 32 for ch in raw) or any(ch.isspace() for ch in raw):
+        raise ValueError('Website link contains spaces or invalid characters.')
+    return raw
 
 
 def parse_amount(value):
@@ -913,7 +932,7 @@ def finalize_store_artifact(stage, kind, product_id, version_id):
 def store_product_query(slug=None, include_inactive=False):
     base = '''SELECT p.*, v.id AS version_id, v.version_label, v.artifact_path, v.original_name AS version_original_name,
                      v.mime_type AS version_mime_type, v.file_size AS version_file_size, v.sha256 AS version_sha256,
-                     v.release_notes, v.website_root, v.website_entry, v.created_at AS version_created_at
+                     v.release_notes, v.external_url, v.website_root, v.website_entry, v.created_at AS version_created_at
               FROM store_products p LEFT JOIN store_versions v ON v.id=p.current_version_id'''
     args = []
     where = []
@@ -978,23 +997,25 @@ def store_guest_identity():
     return guest_id
 
 
-def create_free_store_order(product):
-    """Create an immediately approved order for a genuinely free product.
-
-    This keeps free downloads visible in accounting/audit/download analytics without
-    forcing the visitor through payment checkout.
-    """
+def create_free_store_order(product, buyer_name, buyer_phone, buyer_email=''):
+    """Create an approved free order while requiring a real downloader identity."""
     version = current_product_version(product['id'])
     if not version:
         abort(404)
-    guest_id = store_guest_identity()
+    buyer_name = re.sub(r'\s+', ' ', (buyer_name or '').strip())
+    buyer_phone = normalize_phone(buyer_phone)
+    buyer_email = (buyer_email or '').strip()
+    if not buyer_name or len(buyer_name) < 2:
+        raise ValueError("Enter the user's name before downloading the APK.")
+    if not buyer_phone or len(buyer_phone) < 9:
+        raise ValueError('Enter a valid phone number before downloading the APK.')
     code = order_code()
     db = get_db()
     try:
         db.execute('BEGIN')
         cur = db.execute("""INSERT INTO store_orders(order_code,buyer_name,buyer_phone,buyer_email,amount_expected,amount_entered,status,manual_note,approved_at,created_at)
                            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                     (code, 'Guest / Free Download', guest_id, '', 0.0, 0.0, 'approved',
+                     (code, buyer_name, buyer_phone, buyer_email, 0.0, 0.0, 'approved',
                       'Free product — no payment required.', now_iso(), now_iso()))
         order_id = cur.lastrowid
         cur = db.execute("""INSERT INTO store_order_items(order_id,product_id,version_id,product_name_snapshot,unit_price,access_token,created_at)
@@ -1264,9 +1285,26 @@ def index():
 
 
 @app.route('/store')
+@app.route('/store/')
+@app.route('/apps')
+@app.route('/apps/')
+@app.route('/app-store')
+@app.route('/app-store/')
+@app.route('/appstore')
+@app.route('/appstore/')
 def store():
     products = store_product_query(include_inactive=False)
-    return render_template('store.html', products=products, cart=store_cart_products(), cart_total=store_cart_total(store_cart_products()))
+    groups = {}
+    for product in products:
+        category = (product['category'] or 'Other').strip() or 'Other'
+        groups.setdefault(category, []).append(product)
+    category_order = sorted(groups, key=lambda x: (x.casefold() != 'music', x.casefold()))
+    grouped_products = [(category, groups[category]) for category in category_order]
+    return render_template(
+        'store.html', products=products, grouped_products=grouped_products,
+        categories=category_order, cart=store_cart_products(),
+        cart_total=store_cart_total(store_cart_products())
+    )
 
 
 @app.route('/store/free/<int:product_id>', methods=['GET', 'POST'])
@@ -1276,10 +1314,21 @@ def store_get_free(product_id):
         abort(404)
     if store_product_is_paid(product):
         return redirect(url_for('store_product', slug=product['slug']))
-    item, order, version = create_free_store_order(product)
-    if product['kind'] == 'apk':
+    if product['kind'] != 'apk':
+        return redirect(url_for('store_site_direct', slug=product['slug']))
+    if request.method == 'GET':
+        return render_template('store_free_identity.html', product=product)
+    try:
+        item, order, version = create_free_store_order(
+            product,
+            request.form.get('buyer_name', ''),
+            request.form.get('buyer_phone', ''),
+            request.form.get('buyer_email', ''),
+        )
         return redirect(url_for('store_download', access_token=item['access_token']))
-    return redirect(url_for('store_site', access_token=item['access_token']))
+    except ValueError as exc:
+        flash(str(exc), 'error')
+        return redirect(url_for('store_get_free', product_id=product_id))
 
 
 @app.route('/store/free-download/<slug>')
@@ -1287,43 +1336,36 @@ def store_free_download(slug):
     product = store_product_query(slug=slug, include_inactive=False)
     if not product or product['kind'] != 'apk' or store_product_is_paid(product):
         abort(404)
-    item, order, version = create_free_store_order(product)
-    path = BASE_DIR / version['artifact_path']
-    if not path.exists():
-        abort(404)
-    record_apk_download(item, order, product, version)
-    response = send_from_directory(str(path.parent), path.name, as_attachment=True, download_name=f"{slugify(product['name'])}-{version['version_label']}.apk")
-    response.headers['Cache-Control'] = 'no-store'
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    return response
+    return redirect(url_for('store_get_free', product_id=product['id']))
 
 
 @app.route('/store/free-site/<slug>/')
-@app.route('/store/free-site/<slug>/<path:asset_path>')
-def store_free_site(slug, asset_path=''):
+def store_free_site(slug):
     product = store_product_query(slug=slug, include_inactive=False)
     if not product or product['kind'] != 'website' or store_product_is_paid(product):
         abort(404)
+    return redirect(url_for('store_site_direct', slug=slug))
+
+
+@app.route('/store/direct-site/<slug>')
+def store_site_direct(slug):
+    product = store_product_query(slug=slug, include_inactive=False)
+    if not product or product['kind'] != 'website':
+        abort(404)
     version = current_product_version(product['id'])
-    if not version or not version['website_root']:
-        abort(404)
-    root = BASE_DIR / version['website_root']
-    if not root.exists():
-        abort(404)
-    rel = asset_path.strip('/') if asset_path else (version['website_entry'] or 'index.html')
-    if '..' in Path(rel).parts or Path(rel).is_absolute():
-        abort(404)
-    target = root / rel
-    if target.is_dir():
-        target = target / 'index.html'
-    if not target.exists() or not target.is_file():
-        abort(404)
-    response = send_from_directory(str(target.parent), target.name, as_attachment=False, mimetype=mimetypes.guess_type(target.name)[0])
-    if target.suffix.casefold() in {'.html', '.htm'}:
-        response.headers['Content-Security-Policy'] = 'sandbox allow-scripts'
-        response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['Cache-Control'] = 'no-store'
-    return response
+    if version and version['external_url']:
+        return redirect(version['external_url'], code=302)
+    # Legacy support for older uploaded website releases.
+    if version and version['website_root']:
+        root = BASE_DIR / version['website_root']
+        target = root / (version['website_entry'] or 'index.html')
+        if target.exists() and target.is_file():
+            response = send_from_directory(str(target.parent), target.name, as_attachment=False, mimetype='text/html')
+            response.headers['Content-Security-Policy'] = 'sandbox allow-scripts'
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            response.headers['Cache-Control'] = 'no-store'
+            return response
+    abort(404)
 
 
 @app.route('/store/product/<slug>')
@@ -1517,7 +1559,11 @@ def store_site(access_token, asset_path=''):
         abort(403)
     product = query_one('SELECT * FROM store_products WHERE id=?', (item['product_id'],))
     version = current_product_version(item['product_id']) if product else None
-    if not product or not version or product['kind'] != 'website' or not version['website_root']:
+    if not product or not version or product['kind'] != 'website':
+        abort(404)
+    if version['external_url']:
+        return redirect(version['external_url'], code=302)
+    if not version['website_root']:
         abort(404)
     root = BASE_DIR / version['website_root']
     if not root.exists():
@@ -1540,6 +1586,7 @@ def store_site(access_token, asset_path=''):
 
 
 @app.route('/api/store/apk/<slug>/update-check')
+@app.route('/api/store/apk/<slug>/latest')
 def store_apk_update_check(slug):
     product = store_product_query(slug=slug, include_inactive=False)
     if not product or product['kind'] != 'apk' or not product['version_id']:
@@ -1554,7 +1601,7 @@ def store_apk_update_check(slug):
         entitled = row is not None
     if paid and not entitled:
         return jsonify({'ok': True, 'update_available': bool(current_version and current_version != product['version_label']), 'requires_purchase': True, 'version': product['version_label']})
-    download_url = url_for('store_download', access_token=token) if token and entitled else (url_for('store_free_download', slug=product['slug']) if not paid else None)
+    download_url = url_for('store_download', access_token=token) if token and entitled else (url_for('store_get_free', product_id=product['id']) if not paid else None)
     return jsonify({
         'ok': True,
         'product': product['name'],
@@ -1788,6 +1835,7 @@ def admin_store():
         if action == 'create_product':
             name = request.form.get('name', '').strip()
             kind = request.form.get('kind', 'apk').strip().lower()
+            category = request.form.get('category', 'Other').strip() or 'Other'
             description = request.form.get('description', '').strip()
             short_description = request.form.get('short_description', '').strip()
             instructions = request.form.get('access_instructions', '').strip()
@@ -1799,52 +1847,62 @@ def admin_store():
             active = 1 if request.form.get('active') == '1' else 0
             artifact = request.files.get('artifact')
             icon = request.files.get('icon')
+            website_url = request.form.get('website_url', '').strip()
             if kind not in {'apk','website'}:
                 flash('Choose APK or Website.', 'error'); return redirect(url_for('admin_store'))
-            if not name or not artifact or not artifact.filename:
-                flash('Name and the release file are required.', 'error'); return redirect(url_for('admin_store'))
+            if not name:
+                flash('Product name is required.', 'error'); return redirect(url_for('admin_store'))
             if price < 0:
                 flash('Price cannot be negative.', 'error'); return redirect(url_for('admin_store'))
-            if payment_required and price <= 0:
-                flash('A paid product must have a price greater than zero.', 'error'); return redirect(url_for('admin_store'))
+            if kind == 'apk' and (not artifact or not artifact.filename):
+                flash('Choose the APK release file.', 'error'); return redirect(url_for('admin_store'))
+            if kind == 'website' and not website_url:
+                flash('Enter the website URL.', 'error'); return redirect(url_for('admin_store'))
             stage = None; icon_stage = None; final_artifact = None; final_root = None
             try:
-                stage, original, file_size, sha256 = stage_store_upload(artifact, kind)
-                generated = generate_website_explanation(stage) if kind == 'website' and Path(original).suffix.casefold() == '.zip' else ''
-                if kind == 'website' and generated:
+                external_url = normalize_external_url(website_url) if kind == 'website' else ''
+                if kind == 'apk':
+                    stage, original, file_size, sha256 = stage_store_upload(artifact, 'apk')
+                    mime_type = mimetypes.guess_type(original)[0] or 'application/vnd.android.package-archive'
+                    artifact_path = 'PENDING'
+                else:
+                    original = external_url
+                    file_size = 0
+                    sha256 = hashlib.sha256(external_url.encode('utf-8')).hexdigest()
+                    mime_type = 'text/html'
+                    artifact_path = 'EXTERNAL_URL'
                     if not description:
-                        description = generated or 'Uploaded website package ready for publication.'
+                        description = f'Website: {external_url}'
                     if not short_description:
-                        short_description = generated[:280].rstrip()
+                        short_description = 'Open this website directly from Toror Apps & Sites.'
                 icon_path = ''
                 if icon and icon.filename:
-                    icon_stage, icon_original = save_upload(icon, 'store/icons', {'.png','.jpg','.jpeg','.webp','.svg'})
+                    icon_stage, _ = save_upload(icon, 'store/icons', {'.png','.jpg','.jpeg','.webp','.svg'})
                     icon_path = '/' + icon_stage if not icon_stage.startswith('/') else icon_stage
                 db = get_db()
                 db.execute('BEGIN')
                 slug = unique_product_slug(name)
-                cur = db.execute('''INSERT INTO store_products(name,slug,kind,short_description,description,price_kes,payment_required,premium_enabled,active,icon_path,access_instructions,created_at,updated_at)
-                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', (name,slug,kind,short_description,description,float(price),payment_required,premium_enabled,active,icon_path,instructions,now_iso(),now_iso()))
+                cur = db.execute('''INSERT INTO store_products(name,slug,kind,short_description,category,description,price_kes,payment_required,premium_enabled,active,icon_path,access_instructions,created_at,updated_at)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (name,slug,kind,short_description,category,description,float(price),payment_required,premium_enabled,active,icon_path,instructions,now_iso(),now_iso()))
                 product_id = cur.lastrowid
-                cur = db.execute('''INSERT INTO store_versions(product_id,version_label,artifact_path,original_name,mime_type,file_size,sha256,release_notes,is_current,created_at)
-                                    VALUES (?,?,?,?,?,?,?,?,?,?)''', (product_id,version_label,'PENDING',original,mimetypes.guess_type(original)[0] or ('application/vnd.android.package-archive' if kind=='apk' else 'text/html'),file_size,sha256,release_notes,1,now_iso()))
+                cur = db.execute('''INSERT INTO store_versions(product_id,version_label,artifact_path,original_name,mime_type,file_size,sha256,release_notes,external_url,is_current,created_at)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (product_id,version_label,artifact_path,original,mime_type,file_size,sha256,release_notes,external_url or None,1,now_iso()))
                 version_id = cur.lastrowid
-                final_artifact, final_root, entry = finalize_store_artifact(stage, kind, product_id, version_id)
-                stage = None
-                db.execute('''UPDATE store_versions SET artifact_path=?, website_root=?, website_entry=? WHERE id=?''', (final_artifact,final_root,entry if kind=='website' else None,version_id))
+                if kind == 'apk':
+                    final_artifact, final_root, _ = finalize_store_artifact(stage, kind, product_id, version_id)
+                    stage = None
+                    db.execute('UPDATE store_versions SET artifact_path=? WHERE id=?', (final_artifact,version_id))
                 db.execute('UPDATE store_products SET current_version_id=?, updated_at=? WHERE id=?', (version_id,now_iso(),product_id))
                 db.commit()
-                if icon_stage:
-                    icon_stage = None
+                icon_stage = None
                 flash(f'{kind.title()} product “{name}” published.', 'success')
             except Exception as exc:
                 try: get_db().rollback()
                 except Exception: pass
                 if stage: Path(stage).unlink(missing_ok=True)
                 if final_artifact: (BASE_DIR / final_artifact).unlink(missing_ok=True)
-                if final_root and (BASE_DIR / final_root).exists() and not Path(final_root).samefile(BASE_DIR):
-                    shutil.rmtree(BASE_DIR / final_root, ignore_errors=True)
-                if icon_stage: (BASE_DIR / icon_stage).unlink(missing_ok=True)
+                if final_root and (BASE_DIR / final_root).exists(): shutil.rmtree(BASE_DIR / final_root, ignore_errors=True)
+                if icon_stage: Path(BASE_DIR / icon_stage).unlink(missing_ok=True)
                 flash(f'Product was not published because the new release could not be committed safely: {exc}', 'error')
             return redirect(url_for('admin_store'))
     products = store_product_query(include_inactive=True)
@@ -1884,6 +1942,7 @@ def admin_store_edit(product_id):
             flash('Product archived. Its releases, orders and accounting history remain intact.', 'success')
             return redirect(url_for('admin_store'))
         name = request.form.get('name', '').strip()
+        category = request.form.get('category', 'Other').strip() or 'Other'
         description = request.form.get('description', '').strip()
         short_description = request.form.get('short_description', '').strip()
         instructions = request.form.get('access_instructions', '').strip()
@@ -1895,8 +1954,8 @@ def admin_store_edit(product_id):
             flash('Name is required; price cannot be negative; paid products must cost more than zero.', 'error')
             return redirect(url_for('admin_store_edit', product_id=product_id))
         slug = unique_product_slug(name, product_id)
-        execute('''UPDATE store_products SET name=?,slug=?,short_description=?,description=?,price_kes=?,payment_required=?,premium_enabled=?,active=?,access_instructions=?,updated_at=? WHERE id=?''',
-                (name,slug,short_description,description, float(price),payment_required,premium_enabled,active,instructions,now_iso(),product_id))
+        execute('''UPDATE store_products SET name=?,slug=?,short_description=?,category=?,description=?,price_kes=?,payment_required=?,premium_enabled=?,active=?,access_instructions=?,updated_at=? WHERE id=?''',
+                (name,slug,short_description,category,description,float(price),payment_required,premium_enabled,active,instructions,now_iso(),product_id))
         icon = request.files.get('icon')
         if icon and icon.filename:
             try:
@@ -1908,7 +1967,15 @@ def admin_store_edit(product_id):
         flash('Product details updated.', 'success')
         return redirect(url_for('admin_store'))
     versions = query_all('SELECT * FROM store_versions WHERE product_id=? ORDER BY id DESC', (product_id,))
-    return render_template('admin_store_edit.html', product=product, versions=versions, money_label=money_label)
+    current_version = current_product_version(product_id)
+    return render_template('admin_store_edit.html', product=product, versions=versions, current_version=current_version, money_label=money_label)
+
+
+def release_version_key(value):
+    parts = re.findall(r'\d+', str(value or ''))
+    if not parts:
+        return None
+    return tuple(int(x) for x in parts)
 
 
 @app.route('/admin/store/<int:product_id>/version', methods=['POST'])
@@ -1917,51 +1984,57 @@ def admin_store_version(product_id):
     product = query_one('SELECT * FROM store_products WHERE id=?', (product_id,))
     if not product:
         abort(404)
-    artifact = request.files.get('artifact')
     version_label = request.form.get('version_label', '').strip()
     release_notes = request.form.get('release_notes', '').strip()
     if not version_label:
-        flash('Enter the new version label before uploading.', 'error')
+        flash('Enter the new version label before publishing.', 'error')
         return redirect(url_for('admin_store_edit', product_id=product_id))
+    current_version = current_product_version(product_id)
+    if current_version:
+        current_label = current_version['version_label'] or ''
+        if version_label == current_label:
+            flash('That version is already live. Use a different version label.', 'error')
+            return redirect(url_for('admin_store_edit', product_id=product_id))
+        old_key = release_version_key(current_label)
+        new_key = release_version_key(version_label)
+        if old_key and new_key and new_key <= old_key:
+            flash(f'New version must be higher than the current version {current_label}.', 'error')
+            return redirect(url_for('admin_store_edit', product_id=product_id))
     stage = None; final_artifact = None; final_root = None
     try:
-        stage, original, file_size, sha256 = stage_store_upload(artifact, product['kind'])
-        if product['kind'] == 'website' and Path(original).suffix.casefold() == '.zip':
-            generated_description = generate_website_explanation(stage)
+        external_url = None
+        if product['kind'] == 'apk':
+            artifact = request.files.get('artifact')
+            stage, original, file_size, sha256 = stage_store_upload(artifact, 'apk')
+            mime_type = mimetypes.guess_type(original)[0] or 'application/vnd.android.package-archive'
+            artifact_path = 'PENDING'
         else:
-            generated_description = ''
+            external_url = normalize_external_url(request.form.get('website_url', '').strip())
+            original = external_url
+            file_size = 0
+            sha256 = hashlib.sha256(external_url.encode('utf-8')).hexdigest()
+            mime_type = 'text/html'
+            artifact_path = 'EXTERNAL_URL'
         db = get_db()
         db.execute('BEGIN')
-        cur = db.execute('''INSERT INTO store_versions(product_id,version_label,artifact_path,original_name,mime_type,file_size,sha256,release_notes,is_current,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?)''', (product_id,version_label,'PENDING',original,mimetypes.guess_type(original)[0] or ('application/vnd.android.package-archive' if product['kind']=='apk' else 'text/html'),file_size,sha256,release_notes,1,now_iso()))
+        cur = db.execute('''INSERT INTO store_versions(product_id,version_label,artifact_path,original_name,mime_type,file_size,sha256,release_notes,external_url,is_current,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (product_id,version_label,artifact_path,original,mime_type,file_size,sha256,release_notes,external_url,1,now_iso()))
         version_id = cur.lastrowid
+        if product['kind'] == 'apk':
+            final_artifact, final_root, _ = finalize_store_artifact(stage, 'apk', product_id, version_id)
+            stage = None
+            db.execute('UPDATE store_versions SET artifact_path=? WHERE id=?', (final_artifact,version_id))
         db.execute('UPDATE store_versions SET is_current=0 WHERE product_id=? AND id<>?', (product_id,version_id))
-        final_artifact, final_root, entry = finalize_store_artifact(stage, product['kind'], product_id, version_id)
-        stage = None
-        db.execute('UPDATE store_versions SET artifact_path=?, website_root=?, website_entry=? WHERE id=?', (final_artifact,final_root,entry if product['kind']=='website' else None,version_id))
         db.execute('UPDATE store_products SET current_version_id=?, updated_at=? WHERE id=?', (version_id,now_iso(),product_id))
-        # Re-generation is useful when the admin left a website description blank.
-        if product['kind'] == 'website' and generated_description:
-            updates = []
-            params = []
-            if not (product['description'] or '').strip():
-                updates.append('description=?')
-                params.append(generated_description)
-            if not (product['short_description'] or '').strip():
-                updates.append('short_description=?')
-                params.append(generated_description[:280].rstrip())
-            if updates:
-                params.append(product_id)
-                db.execute('UPDATE store_products SET ' + ', '.join(updates) + ' WHERE id=?', tuple(params))
         db.commit()
-        flash(f'Version {version_label} is live. Existing orders keep their entitlement; downloads now use the latest release.', 'success')
+        flash(f'Version {version_label} is live. Existing approved access links now serve the new release automatically.', 'success')
     except Exception as exc:
         try: get_db().rollback()
         except Exception: pass
         if stage: Path(stage).unlink(missing_ok=True)
         if final_artifact: (BASE_DIR / final_artifact).unlink(missing_ok=True)
         if final_root and (BASE_DIR / final_root).exists(): shutil.rmtree(BASE_DIR / final_root, ignore_errors=True)
-        flash(f'The old release was kept because the new upload failed safely: {exc}', 'error')
+        flash(f'The previous release was kept. New release was not published: {exc}', 'error')
     return redirect(url_for('admin_store_edit', product_id=product_id))
 
 

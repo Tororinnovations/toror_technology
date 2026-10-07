@@ -1,18 +1,41 @@
 {% extends 'base.html' %}
 {% set title = 'Apps & Sites · ' ~ site_name %}
 {% block content %}
-<section class="page-hero store-public-hero"><span class="eyebrow">Toror Apps & Sites</span><h1>A small store for real digital products.</h1><p>Download Toror applications or open uploaded websites after access is approved. Paid items remain pending until the payment gateway confirms the matching M-PESA receipt.</p><div class="cta-row"><a class="btn primary" href="#catalog">Browse products</a><a class="btn" href="/store/cart">Cart{% if store_cart_count %} · {{ store_cart_count }}{% endif %}</a></div></section>
-<section class="content-section" id="catalog">
-  <div class="section-heading"><div><span class="section-kicker">Catalog</span><h2>Apps, websites & premium products.</h2></div><a class="btn" href="/store/cart">Open cart{% if store_cart_count %} ({{ store_cart_count }}){% endif %}</a></div>
-  <div class="store-grid">
-    {% for product in products %}
-    <article class="store-card {% if product.premium_enabled %}premium-card{% endif %}">
-      <div class="store-card-icon">{% if product.icon_path %}<img src="{{ product.icon_path }}" alt="">{% else %}<span>{{ 'A' if product.kind == 'apk' else 'W' }}</span>{% endif %}</div>
-      <div class="store-card-body"><div class="store-card-tags"><span class="badge">{{ product.kind|title }}</span>{% if product.premium_enabled %}<span class="badge premium-badge">Premium</span>{% endif %}</div><h3>{{ product.name }}</h3><p>{{ product.short_description or product.description }}</p></div>
-      <div class="store-card-footer"><strong>{% if product.payment_required and product.price_kes > 0 %}{{ 'KES %.2f'|format(product.price_kes) }}{% else %}Free{% endif %}</strong>{% if product.payment_required and product.price_kes > 0 %}<a class="btn primary" href="/store/product/{{ product.slug }}">View details</a>{% else %}<form method="post" action="/store/free/{{ product.id }}"><button class="btn primary" type="submit">{% if product.kind == 'apk' %}Download now{% else %}Open now{% endif %}</button></form>{% endif %}</div>
-    </article>
-    {% else %}<article class="store-empty"><span class="section-kicker">Coming soon</span><h3>No digital products are published yet.</h3><p>New Toror apps and uploaded websites will appear here automatically when the administrator publishes them.</p></article>{% endfor %}
-  </div>
+<section class="page-hero store-public-hero">
+  <span class="eyebrow">Toror Apps & Sites</span>
+  <h1>Your small app store.</h1>
+  <p>Browse by topic instead of scrolling through one long list. Free APKs go straight to identity and download; paid products use checkout and payment approval.</p>
+  <div class="cta-row"><a class="btn primary" href="#catalog">Browse topics</a>{% if cart|length %}<a class="btn" href="/store/cart">Cart · {{ cart|length }}</a>{% endif %}</div>
 </section>
-<section class="content-section cta-panel store-safety-panel"><div><span class="section-kicker">Payment & access</span><h2>No payment is treated as complete until the gateway or administrator approves it.</h2><p>Paid orders are matched using the buyer name, phone number and exact amount, then kept in the accounting ledger.</p></div><a class="btn primary" href="/store/cart">View cart</a></section>
+<section class="content-section" id="catalog">
+  <div class="section-heading"><div><span class="section-kicker">Topics</span><h2>Choose a category.</h2></div></div>
+  {% if categories %}<div class="store-topic-nav">{% for category in categories %}<a class="store-topic-pill" href="#topic-{{ loop.index0 }}">{{ category }}</a>{% endfor %}</div>{% endif %}
+  {% for category, items in grouped_products %}
+  <section class="store-topic-section" id="topic-{{ loop.index0 }}">
+    <div class="section-heading store-topic-heading"><div><span class="section-kicker">Topic</span><h2>{{ category }}</h2></div><span class="muted">{{ items|length }} item{{ '' if items|length == 1 else 's' }}</span></div>
+    <div class="store-topic-grid {% if items|selectattr('kind','equalto','apk')|list %}store-apk-topic-grid{% endif %}">
+      {% for product in items %}
+      <article class="store-card {% if product.premium_enabled %}premium-card{% endif %}">
+        <a class="store-card-main-link" href="/store/product/{{ product.slug }}" aria-label="View {{ product.name }} details">
+          <div class="store-card-icon">{% if product.icon_path %}<img src="{{ product.icon_path }}" alt="">{% else %}<span>{{ 'A' if product.kind == 'apk' else 'W' }}</span>{% endif %}</div>
+          <div class="store-card-body">
+            <div class="store-card-tags"><span class="badge">{{ product.kind|title }}</span>{% if product.premium_enabled %}<span class="badge premium-badge">Premium ready</span>{% endif %}</div>
+            <h3>{{ product.name }}</h3>
+            <p>{{ product.short_description or product.description }}</p>
+            {% if product.kind == 'website' %}<span class="store-web-preview-note">Website link · opens the live site</span>{% endif %}
+          </div>
+        </a>
+        <div class="store-card-footer"><strong>{% if product.payment_required and product.price_kes > 0 %}KES {{ '%.2f'|format(product.price_kes) }}{% else %}Free{% endif %}</strong>
+          {% if product.payment_required and product.price_kes > 0 %}<a class="btn primary" href="/store/product/{{ product.slug }}">View details</a>
+          {% elif product.kind == 'apk' %}<a class="btn primary" href="/store/free/{{ product.id }}">Download</a>
+          {% else %}<a class="btn primary" href="/store/direct-site/{{ product.slug }}" target="_blank" rel="noopener">Open</a>{% endif %}
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% else %}
+  <article class="store-empty"><span class="section-kicker">Coming soon</span><h3>No products are published yet.</h3><p>New Toror apps and website links will appear here automatically when you publish them from Admin.</p></article>
+  {% endfor %}
+</section>
 {% endblock %}

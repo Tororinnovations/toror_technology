@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% set title = 'Download ' ~ product.name ~ ' · ' ~ site_name %}
+{% block content %}
+<section class="page-hero store-checkout-hero"><span class="eyebrow">Free APK download</span><h1>Tell us who is installing {{ product.name }}.</h1><p>The app is free, so there is no payment process. We only record the downloader's name and phone so every installation/download can be attributed to a known user.</p></section>
+<section class="content-section checkout-grid">
+  <div class="card checkout-items"><span class="section-kicker">Product</span><h2>{{ product.name }}</h2><p class="muted">{{ product.short_description or product.description }}</p><div class="store-info-callout"><strong>Free — no payment required</strong><span>Your details are used for download and growth analytics, not for a purchase.</span></div></div>
+  <form class="checkout-payment card form-card" method="post">
+    <span class="section-kicker">Downloader identity</span><h3>Enter your details</h3>
+    <div class="field"><label>Your name</label><input name="buyer_name" autocomplete="name" required></div>
+    <div class="field"><label>Phone number</label><input name="buyer_phone" inputmode="tel" autocomplete="tel" placeholder="07xx xxx xxx or 2547xx xxx xxx" required></div>
+    <div class="field"><label>Email (optional)</label><input name="buyer_email" type="email" autocomplete="email"></div>
+    <button class="btn primary store-buy-button" type="submit">Continue to download</button>
+  </form>
+</section>
+{% endblock %}

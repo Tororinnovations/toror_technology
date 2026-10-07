@@ -6,7 +6,7 @@
   <div class="store-edit-grid">
     <form class="card form-card" method="post" enctype="multipart/form-data">
       <input type="hidden" name="action" value="details">
-      <div class="form-grid"><div class="field"><label>Name</label><input name="name" value="{{ product.name }}" required></div><div class="field"><label>Price (KES)</label><input name="price" type="number" min="0" step="0.01" value="{{ product.price_kes }}"></div></div>
+      <div class="form-grid"><div class="field"><label>Name</label><input name="name" value="{{ product.name }}" required></div><div class="field"><label>Topic / category</label><input name="category" value="{{ product.category or 'Other' }}" list="store-topic-edit-list"><datalist id="store-topic-edit-list"><option value="Music"><option value="Business"><option value="Travel"><option value="Education"><option value="Tools"><option value="Entertainment"><option value="Other"></datalist></div><div class="field"><label>Price (KES)</label><input name="price" type="number" min="0" step="0.01" value="{{ product.price_kes }}"></div></div>
       <div class="field"><label>Short description</label><input name="short_description" value="{{ product.short_description or '' }}"></div>
       <div class="field"><label>Description</label><textarea name="description" rows="8" required>{{ product.description }}</textarea></div>
       <div class="field"><label>Instructions shown after approval</label><textarea name="access_instructions" rows="7">{{ product.access_instructions or '' }}</textarea></div>
@@ -21,13 +21,17 @@
     <form class="card form-card archive-form" method="post" action="/admin/store/{{ product.id }}/edit" onsubmit="return confirm('Archive this product? Existing releases, orders and accounting records will be kept.');"><input type="hidden" name="action" value="archive"><strong>Archive without deleting</strong><p class="muted">This only removes the product from the public catalog. Approved buyers keep their access records and release history.</p><button class="btn" type="submit">Archive product</button></form>
 
     <div class="card form-card">
-      <span class="section-kicker">Release-safe upload</span><h3>Upload a new {{ product.kind|upper }} release</h3>
-      <p class="muted">The current release is never deleted first. The new file is validated and committed as a new version; if anything fails, the old release stays live.</p>
-      <form method="post" enctype="multipart/form-data">
+      <span class="section-kicker">Release-safe update</span><h3>{% if product.kind == 'apk' %}Publish a new APK version{% else %}Change the live website link{% endif %}</h3>
+      <p class="muted">The current release remains live until the new release validates and commits. Existing approved APK access links follow the latest release automatically. For an Android in-place update, keep the same application/package ID and signing key and increase the APK's Android versionCode.</p>
+      <form method="post" action="{{ url_for('admin_store_version', product_id=product.id) }}" enctype="multipart/form-data">
         <div class="field"><label>New version</label><input name="version_label" placeholder="1.1.0" required></div>
         <div class="field"><label>Release notes</label><textarea name="release_notes" rows="5" placeholder="What changed in this version?"></textarea></div>
-        <div class="field"><label>New release file</label><input name="artifact" type="file" accept=".apk,.zip,.html,.htm" required></div>
-        <button class="btn primary" type="submit">Upload & make this release live</button>
+        {% if product.kind == 'apk' %}
+        <div class="field"><label>New APK release file</label><input name="artifact" type="file" accept=".apk" required><small>The upload is staged and integrity-checked before the live version changes. If it fails, the current APK stays untouched. The store also rejects a release label that is not higher than the current one.</small></div>
+        {% else %}
+        <div class="field"><label>Website URL</label><input name="website_url" type="url" value="{{ current_version.external_url or '' }}" placeholder="https://example.com" required><small>Changing this creates a new link release; the previous URL remains in release history.</small></div>
+        {% endif %}
+        <button class="btn primary" type="submit">{% if product.kind == 'apk' %}Upload & make this APK live{% else %}Save & make this link live{% endif %}</button>
       </form>
       <div class="store-version-history"><strong>Release history</strong>{% for version in versions %}<div class="store-history-row {% if version.id == product.current_version_id %}current{% endif %}"><div><b>{{ version.version_label }}</b>{% if version.id == product.current_version_id %}<span class="badge">CURRENT</span>{% endif %}<span class="table-sub">{{ version.original_name }} · {{ version.created_at[:19].replace('T',' ') }}</span></div><code>{{ (version.sha256 or '')[:18] }}{% if version.sha256 %}…{% endif %}</code></div>{% else %}<span class="muted">No releases.</span>{% endfor %}</div>
     </div>

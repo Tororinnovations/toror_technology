@@ -183,3 +183,17 @@ button{cursor:pointer}
 .store-download-product-card h3 { margin:8px 0 14px; }
 .store-download-product-card .store-version-box { margin-bottom:12px; }
 @media (max-width: 700px) { .store-download-product-grid { grid-template-columns:1fr; } }
+
+/* Store polish: compact topic browsing and three-column APK grid on phones. */
+.store-topic-nav{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 28px}.store-topic-pill{display:inline-flex;align-items:center;padding:8px 12px;border-radius:999px;background:#fff;border:1px solid rgba(78,148,168,.18);color:#5A111D;font-size:11px;font-weight:800;text-decoration:none}.store-topic-section{margin-top:34px}.store-topic-heading{margin-bottom:12px}.store-topic-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.store-card-main-link{display:block;color:inherit;text-decoration:none}.store-card-main-link:hover h3{text-decoration:underline}.store-web-preview-note{display:block;font-size:10px;color:#66777C;margin-top:4px}.store-card{min-height:280px}.store-card-body h3{font-size:20px}.store-card-body p{font-size:13px;line-height:1.35}.store-card-footer .btn{min-height:38px;padding:9px 12px}.store-apk-topic-grid .store-card{min-height:230px}.store-apk-topic-grid .store-card-icon{width:58px;height:58px;border-radius:15px;font-size:22px}
+@media (max-width:760px){
+  .store-topic-grid,.store-apk-topic-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  .store-card{padding:10px;border-radius:14px;gap:9px;min-height:0}
+  .store-apk-topic-grid .store-card{min-height:0}
+  .store-card-icon,.store-apk-topic-grid .store-card-icon{width:48px;height:48px;border-radius:12px;font-size:18px}
+  .store-card-tags{gap:3px}.store-card-tags .badge{font-size:7px;padding:4px 5px;letter-spacing:.04em}
+  .store-card-body{gap:4px}.store-card-body h3{font-size:13px;line-height:1.1}.store-card-body p{font-size:9px;line-height:1.25;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .store-web-preview-note{font-size:7px;line-height:1.2}
+  .store-card-footer{padding-top:7px;gap:5px;align-items:flex-end}.store-card-footer strong{font-size:9px}.store-card-footer .btn{font-size:8px;min-height:30px;padding:7px 8px;border-radius:9px}
+  .store-topic-nav{gap:5px;margin-bottom:20px}.store-topic-pill{font-size:9px;padding:6px 9px}.store-topic-section{margin-top:25px}.store-topic-heading h2{font-size:21px}
+}
