@@ -1585,6 +1585,10 @@ def store_site(access_token, asset_path=''):
     return response
 
 
+def _version_tuple(value):
+    parts = release_version_key(value)
+    return parts if parts is not None else tuple()
+
 @app.route('/api/store/apk/<slug>/update-check')
 @app.route('/api/store/apk/<slug>/latest')
 def store_apk_update_check(slug):
@@ -1596,22 +1600,31 @@ def store_apk_update_check(slug):
     paid = store_product_is_paid(product)
     entitled = False
     if token:
-        row = query_one('''SELECT oi.id FROM store_order_items oi JOIN store_orders o ON o.id=oi.order_id
-                           WHERE oi.access_token=? AND oi.product_id=? AND o.status='approved' LIMIT 1''', (token, product['id']))
+        row = query_one("""SELECT oi.id FROM store_order_items oi JOIN store_orders o ON o.id=oi.order_id
+                           WHERE oi.access_token=? AND oi.product_id=? AND o.status='approved' LIMIT 1""", (token, product['id']))
         entitled = row is not None
+    latest = product['version_label'] or ''
+    current_key = _version_tuple(current_version)
+    latest_key = _version_tuple(latest)
+    update_available = bool(current_version) and ((latest_key > current_key) if current_key and latest_key else current_version != latest)
     if paid and not entitled:
-        return jsonify({'ok': True, 'update_available': bool(current_version and current_version != product['version_label']), 'requires_purchase': True, 'version': product['version_label']})
+        response = jsonify({'ok': True, 'update_available': update_available, 'requires_purchase': True, 'version': latest})
+        response.headers['Cache-Control'] = 'no-store, max-age=0'
+        return response
     download_url = url_for('store_download', access_token=token) if token and entitled else (url_for('store_get_free', product_id=product['id']) if not paid else None)
-    return jsonify({
+    response = jsonify({
         'ok': True,
         'product': product['name'],
-        'version': product['version_label'],
+        'version': latest,
         'current_version': current_version,
-        'update_available': current_version != product['version_label'],
+        'update_available': update_available,
         'sha256': product['version_sha256'],
         'download_url': download_url,
+        'latest_release_url': url_for('store_download', access_token=token) if token and entitled else None,
         'notes': product['release_notes'] or '',
     })
+    response.headers['Cache-Control'] = 'no-store, max-age=0'
+    return response
 
 
 @app.route('/about')
