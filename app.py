@@ -28,6 +28,7 @@ from flask import (
     render_template,
     request,
     send_from_directory,
+    send_file,
     session,
     url_for,
 )
@@ -64,12 +65,53 @@ DATA_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
+app.config['CANONICAL_BASE_URL'] = os.environ.get('CANONICAL_BASE_URL', '').strip().rstrip('/')
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
     MAX_CONTENT_LENGTH=650 * 1024 * 1024,
 )
+
+
+def r2_client():
+    """Return an S3-compatible Cloudflare R2 client when credentials are configured."""
+    account = os.environ.get('R2_ACCOUNT_ID', '').strip()
+    key_id = os.environ.get('R2_ACCESS_KEY_ID', '').strip()
+    secret = os.environ.get('R2_SECRET_ACCESS_KEY', '').strip()
+    if not (account and key_id and secret and os.environ.get('R2_BUCKET_NAME', '').strip()):
+        return None
+    try:
+        import boto3
+        return boto3.client('s3', endpoint_url=f'https://{account}.r2.cloudflarestorage.com',
+                            aws_access_key_id=key_id, aws_secret_access_key=secret, region_name='auto')
+    except Exception:
+        app.logger.exception('Unable to initialize configured R2 storage')
+        raise RuntimeError('Cloud storage is configured but its client could not be initialized.')
+
+def r2_bucket():
+    return os.environ.get('R2_BUCKET_NAME', '').strip()
+
+def store_artifact_is_remote(path):
+    return isinstance(path, str) and path.startswith('r2://')
+
+def fetch_remote_artifact(remote_path):
+    """Copy an R2 object to a temporary file for safe Flask file delivery."""
+    if not store_artifact_is_remote(remote_path):
+        return None
+    client = r2_client()
+    if client is None:
+        raise RuntimeError('This release is stored in cloud storage, but R2 credentials are missing in Render.')
+    key = remote_path[5:]
+    handle = tempfile.NamedTemporaryFile(prefix='toror-apk-', suffix='.apk', delete=False)
+    handle.close()
+    try:
+        client.download_file(r2_bucket(), key, handle.name)
+        return handle.name
+    except Exception:
+        Path(handle.name).unlink(missing_ok=True)
+        app.logger.exception('Failed to retrieve release from R2')
+        raise RuntimeError('The stored release could not be retrieved from cloud storage.')
 
 ALLOWED_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.svg'}
 ALLOWED_DOC_EXTS = {'.pdf', '.xlsx', '.xls', '.docx', '.pptx', '.txt'}
@@ -905,6 +947,18 @@ def stage_store_upload(file_storage, kind):
 def finalize_store_artifact(stage, kind, product_id, version_id):
     suffix = Path(stage.name).suffix.casefold()
     if kind == 'apk':
+        # Render's free filesystem is ephemeral. When R2 is configured, releases
+        # are written to object storage before the database points at them.
+        client = r2_client()
+        if client is not None:
+            original = stage.name.split("_", 1)[-1]
+            key = f"apks/{product_id}/v{version_id}_{original}"
+            client.upload_file(str(stage), r2_bucket(), key, ExtraArgs={
+                'ContentType': 'application/vnd.android.package-archive',
+                'Metadata': {'release-version': str(version_id)},
+            })
+            stage.unlink(missing_ok=True)
+            return f'r2://{key}', None, None
         final_dir = STORE_APK_DIR / str(product_id)
         final_dir.mkdir(parents=True, exist_ok=True)
         final = final_dir / f'v{version_id}_{stage.name.split("_", 1)[-1]}'
@@ -1538,13 +1592,28 @@ def store_download(access_token):
     version = current_product_version(item['product_id']) if product else None
     if not product or not version or product['kind'] != 'apk':
         abort(404)
-    path = BASE_DIR / version['artifact_path']
-    if not path.exists():
-        abort(404)
+    artifact_path = version['artifact_path'] or ''
+    temp_remote = None
+    if store_artifact_is_remote(artifact_path):
+        try:
+            temp_remote = fetch_remote_artifact(artifact_path)
+        except Exception:
+            app.logger.exception('APK cloud retrieval failed for version %s', version['version_id'])
+            abort(503, description='APK storage is temporarily unavailable. Please try again shortly.')
+        path = Path(temp_remote)
+    else:
+        path = BASE_DIR / artifact_path
+        if not path.exists():
+            abort(404)
     record_apk_download(item, order, product, version)
-    response = send_from_directory(str(path.parent), path.name, as_attachment=True, download_name=f"{slugify(product['name'])}-{version['version_label']}.apk")
-    response.headers['Cache-Control'] = 'no-store'
+    response = send_file(path, as_attachment=True, download_name=f"{slugify(product['name'])}-{version['version_label']}.apk", mimetype='application/vnd.android.package-archive', conditional=True)
+    if temp_remote:
+        @response.call_on_close
+        def cleanup_temp_release():
+            Path(temp_remote).unlink(missing_ok=True)
+    response.headers['Cache-Control'] = 'private, no-store, max-age=0'
     response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Content-Length'] = str(version['file_size'] or path.stat().st_size)
     return response
 
 
@@ -3165,15 +3234,21 @@ def version():
 
 @app.route('/robots.txt')
 def robots():
-    base = request.url_root.rstrip('/')
+    base = os.environ.get('CANONICAL_BASE_URL', request.url_root).rstrip('/')
     return app.response_class(f'User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /promise212324\nSitemap: {base}/sitemap.xml\n', mimetype='text/plain')
 
 
 @app.route('/sitemap.xml')
 def sitemap():
-    base = request.url_root.rstrip('/')
+    from xml.sax.saxutils import escape
+    base = os.environ.get('CANONICAL_BASE_URL', request.url_root).rstrip('/')
     paths = ['/', '/about', '/services', '/work', '/store', '/faq', '/contact', '/privacy', '/terms', '/verify']
-    xml = '<?xml version="1.0" encoding="UTF-8"?>' + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join(f'<url><loc>{base}{path}</loc></url>' for path in paths) + '</urlset>'
+    try:
+        paths.extend('/store/product/' + row['slug'] for row in query_all("SELECT slug FROM store_products WHERE active=1 ORDER BY id DESC"))
+    except Exception:
+        app.logger.exception('Unable to add store products to sitemap')
+    unique_paths = list(dict.fromkeys(paths))
+    xml = '<?xml version="1.0" encoding="UTF-8"?>' + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' + ''.join(f'<url><loc>{escape(base + path)}</loc></url>' for path in unique_paths) + '</urlset>'
     return app.response_class(xml, mimetype='application/xml')
 
 

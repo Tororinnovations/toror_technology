@@ -5,7 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#7B2431">
   <meta name="description" content="{{ meta_description }}">
-  <meta name="robots" content="index,follow">
+  {% if request.path.startswith('/admin') or request.path.startswith('/promise212324') or request.path.startswith('/store/download/') or request.path.startswith('/store/access/') %}
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  {% else %}
+  <meta name="robots" content="index,follow,max-image-preview:large">
+  <link rel="canonical" href="{{ (config.get('CANONICAL_BASE_URL') or request.url_root.rstrip('/')) ~ request.path }}">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{{ title or site_name }}">
+  <meta property="og:description" content="{{ meta_description }}">
+  <meta property="og:url" content="{{ (config.get('CANONICAL_BASE_URL') or request.url_root.rstrip('/')) ~ request.path }}">
+  {% endif %}
   <link rel="icon" href="{{ logo_path }}">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/static/css/style.css?v=9">
